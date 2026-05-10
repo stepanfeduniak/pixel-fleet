@@ -25,6 +25,8 @@ func (app) DefaultLocalBin() string  { return "claude" }
 func (app) DefaultRemoteBin() string { return "claude" }
 func (app) NeedsBin() bool       { return true }
 func (app) SupportsRemoteControl() bool { return true }
+func (app) RequiresPath() bool   { return true }
+func (app) IsSystem() bool       { return false }
 
 // Colors for Claude — light sky-blue. Pleasant, calm, and clearly distinct
 // from codex's red and the working-status indicator's medium blue (#60A5FA).

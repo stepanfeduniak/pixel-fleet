@@ -174,6 +174,13 @@ func launchCtxFor(opts BuildOpts) apps.LaunchCtx {
 func buildLocalCommand(opts BuildOpts) string {
 	app := resolveApp(opts)
 	exec := app.LaunchExec(launchCtxFor(opts))
+	// Apps that don't require a path (in-process viewers) skip the cd.
+	if !app.RequiresPath() || opts.Path == "" {
+		if opts.Setup == "" {
+			return fmt.Sprintf("exec %s", exec)
+		}
+		return fmt.Sprintf("bash -c 'set -e; %s; exec %s'", opts.Setup, exec)
+	}
 	if opts.Setup == "" {
 		return fmt.Sprintf("cd %s && exec %s", opts.Path, exec)
 	}
@@ -228,11 +235,20 @@ fi`, launchExec, launchExec)
 	var launchScript string
 	switch {
 	case !app.NeedsBin():
-		// No binary to verify — just cd (or run setup) and exec.
-		if opts.Setup == "" {
+		// No binary to verify — just cd (or run setup) and exec. Apps
+		// that don't require a path (viewers) skip the cd entirely.
+		switch {
+		case !app.RequiresPath() || opts.Path == "":
+			if opts.Setup == "" {
+				launchScript = fmt.Sprintf("exec %s\n", launchExec)
+			} else {
+				launchScript = fmt.Sprintf("set -e\n%s\nexec %s\n",
+					opts.Setup, launchExec)
+			}
+		case opts.Setup == "":
 			launchScript = fmt.Sprintf("cd %s\nexec %s\n",
 				shellQuote(opts.Path), launchExec)
-		} else {
+		default:
 			launchScript = fmt.Sprintf("set -e\n%s\nexec %s\n",
 				opts.Setup, launchExec)
 		}
