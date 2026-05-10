@@ -1,0 +1,487 @@
+package session
+
+import (
+	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// sshOpts are the SSH options used for all remote sessions.
+const sshOpts = "-t -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+
+// shellQuote single-quotes s for safe inclusion in a shell command.
+// Embedded single quotes are escaped as '\''.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// Status represents the state of a Claude Code session.
+type Status int
+
+const (
+	StatusUnknown Status = iota
+	StatusWorking
+	StatusWaitingInput
+	StatusIdle
+	StatusError
+)
+
+func (s Status) String() string {
+	switch s {
+	case StatusWorking:
+		return "working"
+	case StatusWaitingInput:
+		return "waiting for input"
+	case StatusIdle:
+		return "idle"
+	case StatusError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+func (s Status) Symbol() string {
+	switch s {
+	case StatusWorking:
+		return "●"
+	case StatusWaitingInput:
+		return "◆"
+	case StatusIdle:
+		return "●"
+	case StatusError:
+		return "✗"
+	default:
+		return "○"
+	}
+}
+
+// Session represents an agent session in a tmux window.
+type Session struct {
+	Name        string // user-given name (used as tmux window name)
+	Machine     string // "home" or SSH host
+	Path        string // repo path on the target machine
+	Agent       string // "claude" (default) or "codex"; restored from store
+	Archived    bool   // user has stashed this session out of the grid
+	WindowIndex int    // tmux window index
+	Status      Status
+	LastOutput  string // last captured pane content
+}
+
+// BuildOpts collects the parameters for assembling a session-launch command.
+//
+// Agent selects which CLI to launch ("claude" or "codex"). When empty it
+// defaults to "claude" for back-compat with callers that predate the
+// agent-choice feature. The LocalClaudeBin / RemoteClaudeBin field names
+// are historical — they hold whichever agent binary the manager picked
+// (claude or codex). RemoteControl is ignored when Agent == "codex"
+// because codex has no claude.ai/code bridge.
+type BuildOpts struct {
+	Machine         string // "home" or SSH host alias
+	Path            string // working directory on the target machine
+	Agent           string // "claude" (default) or "codex"
+	LocalClaudeBin  string // agent binary path for "home"
+	RemoteClaudeBin string // agent binary path on remote
+	Setup           string // optional shell setup script (runs before agent)
+	WindowName      string // local cs tmux window name (display)
+	// RemoteSessionName is the unique tmux SESSION name on the remote
+	// machine. Each cs session gets its own dedicated tmux session
+	// containing exactly one window — there is no shared cs-remote.
+	// This keeps each cs session fully isolated: no shared status bar,
+	// no Ctrl-b N to switch between unrelated sessions, no other cs
+	// sessions visible from inside this one.
+	RemoteSessionName string
+	RemoteControl     bool // launch claude with --remote-control (claude only; ignored for codex)
+}
+
+// BuildCommand is a thin wrapper preserving the legacy positional API for tests
+// or callers that don't need the new persistence features. Prefer BuildShellCommand.
+func BuildCommand(machine, path, claudeBin, remoteClaudeBin string) string {
+	return BuildShellCommand(BuildOpts{
+		Machine:         machine,
+		Path:            path,
+		LocalClaudeBin:  claudeBin,
+		RemoteClaudeBin: remoteClaudeBin,
+		WindowName:      "session",
+		RemoteControl:   true,
+	})
+}
+
+// BuildCommandWithSetup is the legacy positional API including a setup script.
+// Prefer BuildShellCommand.
+func BuildCommandWithSetup(machine, path, claudeBin, remoteClaudeBin, setup string) string {
+	return BuildShellCommand(BuildOpts{
+		Machine:         machine,
+		Path:            path,
+		LocalClaudeBin:  claudeBin,
+		RemoteClaudeBin: remoteClaudeBin,
+		Setup:           setup,
+		WindowName:      "session",
+		RemoteControl:   true,
+	})
+}
+
+// BuildShellCommand returns the shell command string to be executed by the
+// LOCAL tmux window so that a Claude Code session is launched.
+//
+// For machine == "home" the command runs Claude directly in the local window
+// (the local cs tmux session already provides persistence).
+//
+// For remote machines the command SSHes to the remote, creates (or reattaches
+// to) a dedicated per-session tmux session named RemoteSessionName, runs the
+// user's setup + Claude inside its single window, and attaches the local
+// viewer. Each cs session lives in its own remote tmux session — there is
+// no shared cs-remote — so cs sessions on the same machine are fully
+// isolated from each other. The Claude process survives SSH drops, laptop
+// sleep, and viewer disconnects courtesy of tmux + systemd linger.
+func BuildShellCommand(opts BuildOpts) string {
+	if opts.Machine == "home" {
+		return buildLocalCommand(opts)
+	}
+	return buildRemoteCommand(opts)
+}
+
+func buildLocalCommand(opts BuildOpts) string {
+	if opts.Agent == "terminal" {
+		// No agent — just a login shell so the user gets their normal env
+		// (nvm, aliases, etc.). Setup script still honored if provided.
+		shell := `${SHELL:-/bin/bash}`
+		if opts.Setup == "" {
+			return fmt.Sprintf("cd %s && exec %s -l", opts.Path, shell)
+		}
+		return fmt.Sprintf("bash -c 'set -e; %s; exec %s -l'", opts.Setup, shell)
+	}
+	claudeCmd := claudeLaunchCommand(opts.LocalClaudeBin, "home", opts.WindowName, opts.RemoteControl)
+	if opts.Setup == "" {
+		return fmt.Sprintf("cd %s && %s", opts.Path, claudeCmd)
+	}
+	return fmt.Sprintf("bash -c 'set -e; %s; exec %s'", opts.Setup, claudeCmd)
+}
+
+// claudeLaunchCommand returns the form used to start Claude inside the remote
+// tmux window. We always launch the *plain* `claude` binary so the user gets
+// a normal, typeable interactive session. Remote-control bridging is enabled
+// after the session is up by sending the `/remote-control` slash command via
+// tmux send-keys (see Manager.enableRemoteControlAfterStart).
+//
+// We do NOT use `claude remote-control` as the launch command. All three of
+// its spawn modes (same-dir, worktree, session) turn the launching terminal
+// into a server-status landing page that the user cannot type into.
+func claudeLaunchCommand(claudeBin, machine, windowName string, remoteControl bool) string {
+	_ = machine
+	_ = windowName
+	_ = remoteControl
+	return claudeBin
+}
+
+// buildRemoteCommand assembles the SSH+remote-tmux launch command using the
+// per-session model: each cs session lives in its own dedicated tmux session
+// on the remote (no shared cs-remote, no neighboring windows). The remote
+// script is base64-encoded so that arbitrarily quoted user setup scripts can
+// be embedded without shell-quoting hazards.
+func buildRemoteCommand(opts BuildOpts) string {
+	remoteSession := opts.RemoteSessionName
+	if remoteSession == "" {
+		// Fallback for callers that didn't supply one. Real callers (the
+		// manager) always set this to a unique cs-<sanitized>-<8hex> form.
+		remoteSession = "cs-" + opts.WindowName
+	}
+	claudeBin := opts.RemoteClaudeBin
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+
+	// The launch script runs INSIDE the remote tmux session's only window.
+	// PATH prepend: many remotes have a native claude install at
+	// ~/.local/bin/claude (installed by `claude install`) that's strictly
+	// newer than the system npm-global /usr/bin/claude. `~/.local/bin` is
+	// usually added via ~/.profile, which only login shells source. SSH
+	// non-interactive shells don't source it, so without the prepend the
+	// bootstrap finds the stale /usr/bin/claude. We add the prepend
+	// unconditionally — it's a no-op if the directory doesn't exist.
+	claudeCmd := claudeLaunchCommand(claudeBin, opts.Machine, opts.WindowName, opts.RemoteControl)
+	// PATH/nvm prep:
+	//   - prepend ~/.local/bin so a `claude install`-installed binary wins
+	//     over a stale system-wide one.
+	//   - source nvm.sh if present so nvm-installed agent binaries (notably
+	//     codex, sometimes claude) are on PATH. Non-interactive bash skips
+	//     ~/.bashrc, so without this the launch sees only the system PATH.
+	pathPrepend := `export PATH="$HOME/.local/bin:$PATH"
+[ -s "$HOME/.nvm/nvm.sh" ] && \. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true`
+	// Pre-check: if the agent binary isn't on PATH, print a helpful error
+	// and pause so the user actually sees it. Otherwise the launch fails so
+	// fast that remain-on-exit doesn't latch and tmux just reports
+	// "can't find session" with no useful detail.
+	notFoundGuard := fmt.Sprintf(`if ! command -v %s >/dev/null 2>&1; then
+  echo
+  echo "[cs] %s not found in PATH on this machine."
+  echo "PATH:"
+  echo "$PATH" | tr ':' '\n' | sed 's/^/  /'
+  echo
+  echo "Hint: install or auth the agent (e.g. 'codex login'), then retry."
+  echo "[cs] Press Enter to close..."
+  IFS= read -r _ || true
+  exit 1
+fi`, claudeCmd, claudeCmd)
+	var launchScript string
+	switch {
+	case opts.Agent == "terminal":
+		// No agent — just a login shell so the user lands in their normal
+		// interactive environment (nvm, aliases, prompt, etc.).
+		shell := `${SHELL:-/bin/bash}`
+		if opts.Setup == "" {
+			launchScript = fmt.Sprintf("cd %s\nexec %s -l\n",
+				shellQuote(opts.Path), shell)
+		} else {
+			launchScript = fmt.Sprintf("set -e\n%s\nexec %s -l\n",
+				opts.Setup, shell)
+		}
+	case opts.Setup == "":
+		launchScript = fmt.Sprintf("set -e\n%s\ncd %s\n%s\nexec %s\n",
+			pathPrepend, shellQuote(opts.Path), notFoundGuard, claudeCmd)
+	default:
+		launchScript = fmt.Sprintf("set -e\n%s\n%s\n%s\nexec %s\n",
+			pathPrepend, opts.Setup, notFoundGuard, claudeCmd)
+	}
+	launchB64 := base64.StdEncoding.EncodeToString([]byte(launchScript))
+
+	// After creating the new tmux session, fire a detached background poller
+	// (still on the remote machine) that watches the session's pane for the
+	// Claude prompt and sends `/remote-control` to it. setsid + nohup
+	// detaches it from the SSH session so it survives the cs CLI exiting.
+	// Self-terminates after ~60 attempts.
+	rcEnableSnippet := ""
+	if opts.RemoteControl && opts.Agent != "codex" {
+		rcEnableSnippet = `
+setsid nohup bash -c '
+    SESSION="$1"
+    for i in $(seq 1 60); do
+        sleep 0.5
+        content=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
+        case "$content" in
+            *"Remote Control"*|*"/remote-control is active"*)
+                exit 0
+                ;;
+            *"❯"*)
+                tmux send-keys -t "$SESSION" "/remote-control" Enter 2>/dev/null
+                exit 0
+                ;;
+        esac
+    done
+' _ "$SESSION" </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true
+`
+	}
+
+	// The bootstrap script runs in the remote user's shell. It ensures the
+	// per-session tmux exists (creating it on first call, reusing it on
+	// reattach), then attaches the SSH client to its single pane.
+	//
+	// Reattach is detected by `tmux has-session`. If the existing session's
+	// pane is dead (claude exited but remain-on-exit kept the corpse around),
+	// we kill the session and recreate it so the user can re-launch.
+	bootstrap := fmt.Sprintf(`set -e
+SESSION=%s
+LAUNCH_FILE=$(mktemp -t cs-launch-XXXXXX.sh)
+trap 'rm -f "$LAUNCH_FILE"' EXIT
+echo %s | base64 -d > "$LAUNCH_FILE"
+chmod +x "$LAUNCH_FILE"
+SESSION_FRESH=0
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    DEAD=$(tmux list-panes -t "$SESSION" -F '#{pane_dead}' 2>/dev/null | head -1)
+    if [ "$DEAD" = "1" ]; then
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+    fi
+fi
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$SESSION" "bash $LAUNCH_FILE"
+    SESSION_FRESH=1
+fi
+tmux set-option -t "$SESSION" history-limit 50000 >/dev/null 2>&1 || true
+tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
+tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
+tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true
+if [ "$SESSION_FRESH" = "1" ]; then
+    sleep 0.5%s
+fi
+exec tmux attach -t "$SESSION"
+`, shellQuote(remoteSession), launchB64, rcEnableSnippet)
+
+	bootstrapB64 := base64.StdEncoding.EncodeToString([]byte(bootstrap))
+
+	// Outer SSH command. The remote shell decodes the bootstrap and passes
+	// it to `bash -c` as an argument (not via stdin). This matters because
+	// the bootstrap ends with `exec tmux attach`, and tmux attach requires
+	// the process stdin to be a TTY. If we piped the script into `bash`,
+	// the bash process would inherit the pipe as stdin, so the exec'd
+	// tmux would also get the pipe — and fail with "not a terminal".
+	// Using bash -c "$(echo ... | base64 -d)" lets bash keep the SSH TTY
+	// as its stdin.
+	inner := fmt.Sprintf(`bash -c "$(echo %s | base64 -d)"`, bootstrapB64)
+	sshCmd := fmt.Sprintf("ssh %s %s %s",
+		sshOpts, opts.Machine, shellQuote(inner))
+	return wrapWithReconnect(sshCmd)
+}
+
+// BuildReattachCommand builds a command to reattach to an existing tmux session.
+// `tmuxSession` is the remote tmux session name; `window` may be empty for the
+// new per-session model. If a window is provided we attach to that window
+// (used by Adopt for orphaned cs-remote:WINDOW legacy entries).
+func BuildReattachCommand(machine, tmuxSession, window string) string {
+	target := tmuxSession
+	if window != "" {
+		target = tmuxSession + ":" + window
+	}
+	if machine == "home" {
+		return fmt.Sprintf("tmux attach -t %s", target)
+	}
+	sshCmd := fmt.Sprintf("ssh %s %s 'tmux attach -t %s'", sshOpts, machine, target)
+	return wrapWithReconnect(sshCmd)
+}
+
+// wrapWithReconnect wraps an ssh-based command in a small shell loop that
+// reconnects on disconnect. The remote per-session tmux persists across SSH
+// drops (linger keeps the user scope alive), so a reconnect is just another
+// `tmux attach` to the same session — zero state loss.
+//
+// Loop semantics:
+//   - ssh exits 0 (clean detach via Ctrl-b d): break, window closes normally.
+//   - ssh exits non-zero (network drop, broken pipe, signal): print a banner
+//     and reconnect after a short delay.
+//   - 5 consecutive fast failures (each <3s) likely indicate auth/host-key
+//     or remote-config errors that won't fix themselves; pause for Enter
+//     before retrying so the loop doesn't spin.
+//
+// The returned snippet is a single shell program suitable for tmux
+// new-window's command argument (tmux passes it to /bin/sh -c verbatim).
+func wrapWithReconnect(sshCmd string) string {
+	return fmt.Sprintf(`attempts=0
+while :; do
+    start=$(date +%%s)
+    %s
+    ec=$?
+    if [ "$ec" = "0" ]; then
+        break
+    fi
+    duration=$(( $(date +%%s) - start ))
+    attempts=$(( attempts + 1 ))
+    printf '\n\033[33m[cs] viewer disconnected (ssh exit %%d after %%ds). Reconnecting (attempt %%d)...\033[0m\n' "$ec" "$duration" "$attempts"
+    if [ "$duration" -lt 3 ] && [ "$attempts" -ge 5 ]; then
+        printf '\033[31m[cs] 5 fast failures — likely an auth/config error. Press Enter to retry, Ctrl-C to close.\033[0m\n'
+        IFS= read -r _ || break
+        attempts=0
+    fi
+    sleep 2
+done
+`, sshCmd)
+}
+
+// ExpandHome expands ~ to the user's home directory (for local paths).
+func ExpandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return home
+		}
+	}
+	return path
+}
+
+// DetectStatus analyzes captured pane output to determine session status.
+// Detection is based on actual Claude Code terminal output patterns observed
+// from live tmux captures, not generic keyword matching.
+func DetectStatus(output string) Status {
+	if output == "" {
+		return StatusUnknown
+	}
+
+	lines := strings.Split(output, "\n")
+
+	// Collect last 15 non-empty lines (bottom of the pane is most informative)
+	var lastLines []string
+	for i := len(lines) - 1; i >= 0 && len(lastLines) < 15; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed != "" {
+			lastLines = append(lastLines, trimmed)
+		}
+	}
+
+	joined := strings.Join(lastLines, "\n")
+
+	// 1. SSH-level errors — the session itself is broken (not Claude discussing errors)
+	for _, line := range lastLines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "connection refused") ||
+			strings.Contains(lower, "connection closed") ||
+			strings.Contains(lower, "connection timed out") ||
+			strings.Contains(lower, "no route to host") ||
+			strings.Contains(lower, "host key verification failed") {
+			return StatusError
+		}
+	}
+
+	// 2. Permission prompt — Claude needs tool approval
+	if strings.Contains(joined, "Do you want to proceed?") ||
+		strings.Contains(joined, "Do you want to continue?") ||
+		strings.Contains(joined, "Esc to cancel") {
+		return StatusWaitingInput
+	}
+
+	// 3. Working — Claude is actively processing
+	if containsAny(joined, brailleSpinners) ||
+		strings.Contains(joined, "Running…") ||
+		strings.Contains(joined, "◐") ||
+		hasActivityStatus(lastLines) {
+		return StatusWorking
+	}
+
+	// 4. User input prompt — Claude is done, waiting for user
+	if strings.Contains(joined, "shift+tab to cycle") ||
+		strings.Contains(joined, "esc to interrupt") {
+		return StatusWaitingInput
+	}
+	for _, line := range lastLines {
+		if line == "❯" || strings.HasPrefix(line, "❯ ") {
+			return StatusWaitingInput
+		}
+	}
+
+	// 5. Fallback
+	return StatusIdle
+}
+
+// brailleSpinners are the Unicode Braille characters used by Claude Code's spinner.
+var brailleSpinners = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// containsAny checks if s contains any of the substrings.
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasActivityStatus detects Claude Code's working status line, e.g.:
+//
+//	"· Pouncing… (3m 29s · ↓ 6.3k tokens · thought for 8s)"
+//	"✢ Pouncing… (3m 41s · ↓ 6.4k tokens)"
+//	"◐ Computing… (1m 6s · ↓ 1.6k tokens)"
+func hasActivityStatus(lines []string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, "…") &&
+			(strings.Contains(line, "· ↓") || strings.Contains(line, "tokens")) {
+			return true
+		}
+	}
+	return false
+}
