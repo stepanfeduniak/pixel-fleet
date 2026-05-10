@@ -28,6 +28,18 @@ const (
 	ModeArchive
 )
 
+// New-session form field indices. Order on screen matches the constant
+// values: agent first (so the rest of the form is context-aware — e.g.
+// path may not be required for the chosen app), then name, machine,
+// path. Tab cycles through them in this order.
+const (
+	fieldAgent = iota
+	fieldName
+	fieldMachine
+	fieldPath
+	fieldCount
+)
+
 // Model is the bubbletea model for the dashboard.
 type Model struct {
 	manager         *session.Manager
@@ -39,10 +51,12 @@ type Model struct {
 	mode            Mode
 	err             error
 
-	// New session inputs: name, machine, path
+	// New session inputs: name, machine, path. focusedInput uses the
+	// fieldXxx constants below so the order can be tweaked without
+	// hunting magic numbers across the file.
 	nameInput    textinput.Model
 	pathInput    textinput.Model
-	focusedInput int // 0=name, 1=machine, 2=path, 3=agent
+	focusedInput int
 
 	// Agent picker. selectedAgent indexes into newSessionApps — the
 	// filtered list captured when the user pressed `n` (workflow agents)
@@ -536,7 +550,9 @@ func (m Model) handleArchiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // openNewSession enters ModeNewSession with the given app list as the
 // available agents. Used by `n` (workflow agents) and `N` (system /
-// viewer apps).
+// viewer apps). Starts on the agent picker — picking the app first
+// lets the rest of the form adapt (e.g. a viewer skips path entirely
+// thanks to RequiresPath/requires_path).
 func (m Model) openNewSession(available []apps.App) (Model, tea.Cmd) {
 	m.mode = ModeNewSession
 	m.nameInput.Reset()
@@ -545,18 +561,18 @@ func (m Model) openNewSession(available []apps.App) (Model, tea.Cmd) {
 	m.selectedSugg = 0
 	m.selectedMachine = 0
 	m.selectedAgent = 0
-	m.focusedInput = 0
-	m.nameInput.Focus()
+	m.focusedInput = fieldAgent
+	m.nameInput.Blur()
 	m.pathInput.Blur()
 	m.machines = session.ListMachines() // refresh
 	m.newSessionApps = available
-	return m, textinput.Blink
+	return m, nil
 }
 
-// totalInputFields returns the number of input steps in the new session flow.
-// Fields: 0=name, 1=machine, 2=path, 3=agent
+// totalInputFields returns the number of input steps in the new session
+// flow. Driven by the fieldXxx constants — adjust those, not this number.
 func (m Model) totalInputFields() int {
-	return 4
+	return fieldCount
 }
 
 // agentName returns the canonical agent string for the current selection.
@@ -585,54 +601,46 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.focusNewInput()
 
 	case "up":
-		// Machine picker
-		if m.focusedInput == 1 && len(m.machines) > 0 {
-			if m.selectedMachine > 0 {
+		switch m.focusedInput {
+		case fieldAgent:
+			if m.selectedAgent > 0 {
+				m.selectedAgent--
+			}
+			return m, nil
+		case fieldMachine:
+			if len(m.machines) > 0 && m.selectedMachine > 0 {
 				m.selectedMachine--
 			}
 			return m, nil
-		}
-		// Path suggestions
-		if m.focusedInput == 2 && len(m.pathSuggestions) > 0 {
-			if m.selectedSugg > 0 {
+		case fieldPath:
+			if len(m.pathSuggestions) > 0 && m.selectedSugg > 0 {
 				m.selectedSugg--
-			}
-			return m, nil
-		}
-		// Agent picker
-		if m.focusedInput == 3 {
-			if m.selectedAgent > 0 {
-				m.selectedAgent--
 			}
 			return m, nil
 		}
 
 	case "down":
-		// Machine picker
-		if m.focusedInput == 1 && len(m.machines) > 0 {
-			if m.selectedMachine < len(m.machines)-1 {
+		switch m.focusedInput {
+		case fieldAgent:
+			if m.selectedAgent < len(m.newSessionApps)-1 {
+				m.selectedAgent++
+			}
+			return m, nil
+		case fieldMachine:
+			if len(m.machines) > 0 && m.selectedMachine < len(m.machines)-1 {
 				m.selectedMachine++
 			}
 			return m, nil
-		}
-		// Path suggestions
-		if m.focusedInput == 2 && len(m.pathSuggestions) > 0 {
-			if m.selectedSugg < len(m.pathSuggestions)-1 {
+		case fieldPath:
+			if len(m.pathSuggestions) > 0 && m.selectedSugg < len(m.pathSuggestions)-1 {
 				m.selectedSugg++
-			}
-			return m, nil
-		}
-		// Agent picker
-		if m.focusedInput == 3 {
-			if m.selectedAgent < len(m.newSessionApps)-1 {
-				m.selectedAgent++
 			}
 			return m, nil
 		}
 
 	case "enter":
-		// Path suggestions: accept
-		if m.focusedInput == 2 && len(m.pathSuggestions) > 0 && m.selectedSugg < len(m.pathSuggestions) {
+		// Path suggestions: accept the highlighted one.
+		if m.focusedInput == fieldPath && len(m.pathSuggestions) > 0 && m.selectedSugg < len(m.pathSuggestions) {
 			m.pathInput.SetValue(m.pathSuggestions[m.selectedSugg])
 			m.pathSuggestions = nil
 			return m, nil
@@ -643,12 +651,12 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward keystrokes to text input fields
-	if m.focusedInput == 0 { // name
+	if m.focusedInput == fieldName {
 		model, cmd := m.updateInputs(msg)
 		m = model.(Model)
 		return m, cmd
 	}
-	if m.focusedInput == 2 { // path
+	if m.focusedInput == fieldPath {
 		prevPath := m.pathInput.Value()
 		model, cmd := m.updateInputs(msg)
 		m = model.(Model)
@@ -667,10 +675,10 @@ func (m Model) focusNewInput() (Model, tea.Cmd) {
 	m.pathInput.Blur()
 
 	switch m.focusedInput {
-	case 0:
+	case fieldName:
 		m.nameInput.Focus()
 		return m, textinput.Blink
-	case 2:
+	case fieldPath:
 		m.pathInput.Focus()
 		return m, tea.Batch(textinput.Blink, m.searchRepos)
 	}
@@ -802,9 +810,9 @@ func (m Model) handleScanAdoptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateInputs(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.focusedInput {
-	case 0:
+	case fieldName:
 		m.nameInput, cmd = m.nameInput.Update(msg)
-	case 2:
+	case fieldPath:
 		m.pathInput, cmd = m.pathInput.Update(msg)
 	}
 	return m, cmd
@@ -879,48 +887,89 @@ func (m Model) viewGrid() string {
 func (m Model) viewNewSession() string {
 	title := headerStyle.Width(m.width).Render(" pixel-fleet   New Session")
 
-	// Build form sections
+	// Resolve which app is currently picked so we can adapt later
+	// fields: a viewer (or any app with requires_path: false in config)
+	// gets its path field annotated as optional rather than required.
+	var pickedApp apps.App
+	if m.selectedAgent < len(m.newSessionApps) {
+		pickedApp = m.newSessionApps[m.selectedAgent]
+	}
+	pathRequired := true
+	if pickedApp != nil {
+		pathRequired = m.manager.Config().RequiresPathFor(pickedApp.Name(), pickedApp.RequiresPath())
+	}
+
+	label := func(text string, focused bool) string {
+		if focused {
+			return lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render(text)
+		}
+		return promptLabelStyle.Render(text)
+	}
+
+	// Build form sections in order: agent first, then name, machine, path.
 	var formParts []string
 
-	// Name
-	nameLbl := promptLabelStyle.Render("Name:")
-	if m.focusedInput == 0 {
-		nameLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Name:")
-	}
-	formParts = append(formParts, nameLbl, m.nameInput.View(), "")
-
-	// Machine selector
-	machLbl := promptLabelStyle.Render("Machine:  [↑↓ to select]")
-	if m.focusedInput == 1 {
-		machLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Machine:  [↑↓ to select]")
-	}
-	var machineLines []string
-	for i, mach := range m.machines {
+	// Agent picker — driven by the apps registry. Adding an app to
+	// internal/apps/builtin extends the picker without touching this code.
+	agentLines := make([]string, 0, len(m.newSessionApps))
+	for i, a := range m.newSessionApps {
 		prefix := "  "
 		style := dimStyle()
-		if i == m.selectedMachine {
+		if i == m.selectedAgent {
 			prefix = "▸ "
-			if m.focusedInput == 1 {
+			if m.focusedInput == fieldAgent {
 				style = lipgloss.NewStyle().Foreground(whiteColor).Bold(true)
 			} else {
 				style = lipgloss.NewStyle().Foreground(whiteColor)
 			}
 		}
-		label := mach.Name
-		if mach.HostName != "" && mach.HostName != "localhost" {
-			label += "  " + dimStyle().Render(mach.HostName)
-		}
-		machineLines = append(machineLines, style.Render(prefix+label))
+		agentLines = append(agentLines, style.Render(prefix+a.Name()))
 	}
-	formParts = append(formParts, machLbl, strings.Join(machineLines, "\n"), "")
+	formParts = append(formParts,
+		label("Agent:    [↑↓ to select]", m.focusedInput == fieldAgent),
+		strings.Join(agentLines, "\n"),
+		"",
+	)
 
-	// Path
-	pathLbl := promptLabelStyle.Render("Path:")
-	if m.focusedInput == 2 {
-		pathLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Path:")
+	// Name
+	formParts = append(formParts,
+		label("Name:", m.focusedInput == fieldName),
+		m.nameInput.View(),
+		"",
+	)
+
+	// Machine selector
+	machineLines := make([]string, 0, len(m.machines))
+	for i, mach := range m.machines {
+		prefix := "  "
+		style := dimStyle()
+		if i == m.selectedMachine {
+			prefix = "▸ "
+			if m.focusedInput == fieldMachine {
+				style = lipgloss.NewStyle().Foreground(whiteColor).Bold(true)
+			} else {
+				style = lipgloss.NewStyle().Foreground(whiteColor)
+			}
+		}
+		machLine := mach.Name
+		if mach.HostName != "" && mach.HostName != "localhost" {
+			machLine += "  " + dimStyle().Render(mach.HostName)
+		}
+		machineLines = append(machineLines, style.Render(prefix+machLine))
+	}
+	formParts = append(formParts,
+		label("Machine:  [↑↓ to select]", m.focusedInput == fieldMachine),
+		strings.Join(machineLines, "\n"),
+		"",
+	)
+
+	// Path — annotated when the picked agent doesn't require one.
+	pathLabel := "Path:"
+	if !pathRequired {
+		pathLabel = "Path:     (optional for this app)"
 	}
 	suggList := ""
-	if m.focusedInput == 2 && len(m.pathSuggestions) > 0 {
+	if m.focusedInput == fieldPath && len(m.pathSuggestions) > 0 {
 		var lines []string
 		maxShow := 8
 		if len(m.pathSuggestions) < maxShow {
@@ -938,30 +987,11 @@ func (m Model) viewNewSession() string {
 		}
 		suggList = "\n" + dimStyle().Render(strings.Join(lines, "\n"))
 	}
-	formParts = append(formParts, pathLbl, m.pathInput.View()+suggList, "")
-
-	// Agent picker — driven by the apps registry, so adding an app to
-	// internal/apps/builtin extends the picker without touching the TUI.
-	agentLbl := promptLabelStyle.Render("Agent:    [↑↓ to select]")
-	if m.focusedInput == 3 {
-		agentLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Agent:    [↑↓ to select]")
-	}
-	allApps := m.newSessionApps
-	var agentLines []string
-	for i, a := range allApps {
-		prefix := "  "
-		style := dimStyle()
-		if i == m.selectedAgent {
-			prefix = "▸ "
-			if m.focusedInput == 3 {
-				style = lipgloss.NewStyle().Foreground(whiteColor).Bold(true)
-			} else {
-				style = lipgloss.NewStyle().Foreground(whiteColor)
-			}
-		}
-		agentLines = append(agentLines, style.Render(prefix+a.Name()))
-	}
-	formParts = append(formParts, agentLbl, strings.Join(agentLines, "\n"), "")
+	formParts = append(formParts,
+		label(pathLabel, m.focusedInput == fieldPath),
+		m.pathInput.View()+suggList,
+		"",
+	)
 
 	formParts = append(formParts, dimStyle().Render("[enter] create/select  [tab] next  [↑↓] navigate  [esc] cancel"))
 
