@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 )
 
 // sshOpts are the SSH options used for all remote sessions.
@@ -143,37 +145,39 @@ func BuildShellCommand(opts BuildOpts) string {
 	return buildRemoteCommand(opts)
 }
 
-func buildLocalCommand(opts BuildOpts) string {
-	if opts.Agent == "terminal" {
-		// No agent — just a login shell so the user gets their normal env
-		// (nvm, aliases, etc.). Setup script still honored if provided.
-		shell := `${SHELL:-/bin/bash}`
-		if opts.Setup == "" {
-			return fmt.Sprintf("cd %s && exec %s -l", opts.Path, shell)
-		}
-		return fmt.Sprintf("bash -c 'set -e; %s; exec %s -l'", opts.Setup, shell)
+// resolveApp looks up the app for opts and falls back to the registry's
+// default. Returns nil only if the registry is empty (which would mean
+// internal/apps/builtin wasn't imported — a build configuration error).
+func resolveApp(opts BuildOpts) apps.App {
+	if a, ok := apps.Resolve(opts.Agent); ok {
+		return a
 	}
-	claudeCmd := claudeLaunchCommand(opts.LocalClaudeBin, "home", opts.WindowName, opts.RemoteControl)
-	if opts.Setup == "" {
-		return fmt.Sprintf("cd %s && %s", opts.Path, claudeCmd)
-	}
-	return fmt.Sprintf("bash -c 'set -e; %s; exec %s'", opts.Setup, claudeCmd)
+	return apps.Default()
 }
 
-// claudeLaunchCommand returns the form used to start Claude inside the remote
-// tmux window. We always launch the *plain* `claude` binary so the user gets
-// a normal, typeable interactive session. Remote-control bridging is enabled
-// after the session is up by sending the `/remote-control` slash command via
-// tmux send-keys (see Manager.enableRemoteControlAfterStart).
-//
-// We do NOT use `claude remote-control` as the launch command. All three of
-// its spawn modes (same-dir, worktree, session) turn the launching terminal
-// into a server-status landing page that the user cannot type into.
-func claudeLaunchCommand(claudeBin, machine, windowName string, remoteControl bool) string {
-	_ = machine
-	_ = windowName
-	_ = remoteControl
-	return claudeBin
+// launchCtxFor builds the LaunchCtx an app sees, picking the right bin
+// (local vs remote) for the target machine.
+func launchCtxFor(opts BuildOpts) apps.LaunchCtx {
+	bin := opts.RemoteClaudeBin
+	if opts.Machine == "home" {
+		bin = opts.LocalClaudeBin
+	}
+	return apps.LaunchCtx{
+		Path:       opts.Path,
+		Setup:      opts.Setup,
+		Bin:        bin,
+		Machine:    opts.Machine,
+		WindowName: opts.WindowName,
+	}
+}
+
+func buildLocalCommand(opts BuildOpts) string {
+	app := resolveApp(opts)
+	exec := app.LaunchExec(launchCtxFor(opts))
+	if opts.Setup == "" {
+		return fmt.Sprintf("cd %s && exec %s", opts.Path, exec)
+	}
+	return fmt.Sprintf("bash -c 'set -e; %s; exec %s'", opts.Setup, exec)
 }
 
 // buildRemoteCommand assembles the SSH+remote-tmux launch command using the
@@ -188,26 +192,22 @@ func buildRemoteCommand(opts BuildOpts) string {
 		// manager) always set this to a unique cs-<sanitized>-<8hex> form.
 		remoteSession = "cs-" + opts.WindowName
 	}
-	claudeBin := opts.RemoteClaudeBin
-	if claudeBin == "" {
-		claudeBin = "claude"
+
+	app := resolveApp(opts)
+	ctx := launchCtxFor(opts)
+	if ctx.Bin == "" && app.NeedsBin() {
+		ctx.Bin = app.DefaultRemoteBin()
 	}
+	launchExec := app.LaunchExec(ctx)
 
 	// The launch script runs INSIDE the remote tmux session's only window.
-	// PATH prepend: many remotes have a native claude install at
-	// ~/.local/bin/claude (installed by `claude install`) that's strictly
-	// newer than the system npm-global /usr/bin/claude. `~/.local/bin` is
-	// usually added via ~/.profile, which only login shells source. SSH
-	// non-interactive shells don't source it, so without the prepend the
-	// bootstrap finds the stale /usr/bin/claude. We add the prepend
-	// unconditionally — it's a no-op if the directory doesn't exist.
-	claudeCmd := claudeLaunchCommand(claudeBin, opts.Machine, opts.WindowName, opts.RemoteControl)
-	// PATH/nvm prep:
-	//   - prepend ~/.local/bin so a `claude install`-installed binary wins
-	//     over a stale system-wide one.
-	//   - source nvm.sh if present so nvm-installed agent binaries (notably
-	//     codex, sometimes claude) are on PATH. Non-interactive bash skips
-	//     ~/.bashrc, so without this the launch sees only the system PATH.
+	// For apps that need a binary on PATH, we prepend ~/.local/bin (where
+	// `claude install` lands) and source nvm.sh — non-interactive SSH
+	// shells skip ~/.profile and ~/.bashrc, so without these the bootstrap
+	// finds either a stale system-wide binary or none at all.
+	//
+	// Apps with NeedsBin() == false (the terminal app) skip both: terminal
+	// execs a login shell which sources the user's startup files itself.
 	pathPrepend := `export PATH="$HOME/.local/bin:$PATH"
 [ -s "$HOME/.nvm/nvm.sh" ] && \. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true`
 	// Pre-check: if the agent binary isn't on PATH, print a helpful error
@@ -224,26 +224,24 @@ func buildRemoteCommand(opts BuildOpts) string {
   echo "[cs] Press Enter to close..."
   IFS= read -r _ || true
   exit 1
-fi`, claudeCmd, claudeCmd)
+fi`, launchExec, launchExec)
 	var launchScript string
 	switch {
-	case opts.Agent == "terminal":
-		// No agent — just a login shell so the user lands in their normal
-		// interactive environment (nvm, aliases, prompt, etc.).
-		shell := `${SHELL:-/bin/bash}`
+	case !app.NeedsBin():
+		// No binary to verify — just cd (or run setup) and exec.
 		if opts.Setup == "" {
-			launchScript = fmt.Sprintf("cd %s\nexec %s -l\n",
-				shellQuote(opts.Path), shell)
+			launchScript = fmt.Sprintf("cd %s\nexec %s\n",
+				shellQuote(opts.Path), launchExec)
 		} else {
-			launchScript = fmt.Sprintf("set -e\n%s\nexec %s -l\n",
-				opts.Setup, shell)
+			launchScript = fmt.Sprintf("set -e\n%s\nexec %s\n",
+				opts.Setup, launchExec)
 		}
 	case opts.Setup == "":
 		launchScript = fmt.Sprintf("set -e\n%s\ncd %s\n%s\nexec %s\n",
-			pathPrepend, shellQuote(opts.Path), notFoundGuard, claudeCmd)
+			pathPrepend, shellQuote(opts.Path), notFoundGuard, launchExec)
 	default:
 		launchScript = fmt.Sprintf("set -e\n%s\n%s\n%s\nexec %s\n",
-			pathPrepend, opts.Setup, notFoundGuard, claudeCmd)
+			pathPrepend, opts.Setup, notFoundGuard, launchExec)
 	}
 	launchB64 := base64.StdEncoding.EncodeToString([]byte(launchScript))
 
@@ -251,9 +249,10 @@ fi`, claudeCmd, claudeCmd)
 	// (still on the remote machine) that watches the session's pane for the
 	// Claude prompt and sends `/remote-control` to it. setsid + nohup
 	// detaches it from the SSH session so it survives the cs CLI exiting.
-	// Self-terminates after ~60 attempts.
+	// Self-terminates after ~60 attempts. Only injected for apps that
+	// declare SupportsRemoteControl.
 	rcEnableSnippet := ""
-	if opts.RemoteControl && opts.Agent != "codex" {
+	if opts.RemoteControl && app.SupportsRemoteControl() {
 		rcEnableSnippet = `
 setsid nohup bash -c '
     SESSION="$1"

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 	"github.com/stepanfeduniak/pixel-fleet/internal/config"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
 )
@@ -112,17 +113,22 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 		}
 	}
 
-	// Resolve agent + bin selection
-	agent := normalizeAgent(opts.Agent)
-	localBin, remoteBin := m.binsForAgent(agent)
+	// Resolve the app via the registry. Unknown / empty agents fall back to
+	// the default app (typically claude).
+	app, _ := apps.Resolve(opts.Agent)
+	agent := ""
+	if app != nil {
+		agent = app.Name()
+	}
+	localBin, remoteBin := m.binsForApp(app)
 
 	// Build command
 	rcEnabled := m.cfg.IsRemoteControlEnabled()
 	if opts.RemoteControl != nil {
 		rcEnabled = *opts.RemoteControl
 	}
-	if agent == "codex" || agent == "terminal" {
-		rcEnabled = false // no claude.ai/code bridge for non-claude
+	if app == nil || !app.SupportsRemoteControl() {
+		rcEnabled = false
 	}
 	// Each cs session gets its own dedicated remote tmux session.
 	remoteSession := remoteSessionName(name)
@@ -581,34 +587,25 @@ func (m *Manager) Adopt(d DiscoveredSession, name string) (*Session, error) {
 	}, nil
 }
 
-// normalizeAgent canonicalizes an agent string. Empty / unknown values fall
-// back to "claude" (the historical default) with a log warning for unknowns.
-// "terminal" means "no agent — just a plain login shell".
-func normalizeAgent(a string) string {
-	switch strings.ToLower(strings.TrimSpace(a)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "terminal", "shell", "bash":
-		return "terminal"
-	default:
-		log.Printf("warning: unknown agent %q, defaulting to claude", a)
-		return "claude"
-	}
-}
-
-// binsForAgent returns the (local, remote) binary paths to launch for a given
-// agent. For "terminal" it returns empty strings — session.go branches on
-// agent=="terminal" and execs a login shell directly instead.
-func (m *Manager) binsForAgent(agent string) (string, string) {
-	switch agent {
-	case "codex":
-		return m.cfg.CodexBin, m.cfg.RemoteCodexBin
-	case "terminal":
+// binsForApp returns the (local, remote) binary paths to launch for the
+// given app. Apps that don't need a binary (terminal) return empty strings;
+// session.go uses the app's LaunchExec to produce the right exec target.
+//
+// Resolution order: the config's per-app override (BinFor), then the app's
+// own DefaultLocalBin / DefaultRemoteBin. Unknown apps return empty pairs.
+func (m *Manager) binsForApp(app apps.App) (string, string) {
+	if app == nil || !app.NeedsBin() {
 		return "", ""
 	}
-	return m.cfg.ClaudeBin, m.cfg.RemoteClaudeBin
+	local := m.cfg.BinFor(app.Name(), false)
+	if local == "" {
+		local = app.DefaultLocalBin()
+	}
+	remote := m.cfg.BinFor(app.Name(), true)
+	if remote == "" {
+		remote = app.DefaultRemoteBin()
+	}
+	return local, remote
 }
 
 func (m *Manager) resolvePath(machine, path string) string {

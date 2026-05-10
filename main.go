@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
+	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/builtin"
 	"github.com/stepanfeduniak/pixel-fleet/internal/config"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
@@ -61,18 +63,20 @@ func main() {
 		return
 	}
 
-	switch args[0] {
-	case "claude", "codex", "term", "terminal":
-		agent := args[0]
-		if agent == "term" {
-			agent = "terminal"
-		}
+	// First check if args[0] is a registered app's name or alias. Any app
+	// registered via apps.Register automatically gets its own subcommand —
+	// `cs <appname> <name> <machine> <path>` — without further wiring.
+	if agent := apps.Normalize(args[0]); agent != "" {
 		if len(args) < 4 {
 			fmt.Fprintf(os.Stderr, "Usage: cs %s <name> <machine> <path>\n", args[0])
 			fmt.Fprintf(os.Stderr, "Example: cs %s training gpu-01 ~/ml-project\n", args[0])
 			os.Exit(1)
 		}
 		cmdNewAndDashboard(mgr, cfg, args[1], args[2], args[3], noRC, agent)
+		return
+	}
+
+	switch args[0] {
 	case "ls", "list":
 		cmdList(mgr)
 	case "scan":
@@ -374,20 +378,30 @@ func cmdDoctor(args []string) {
 }
 
 func cmdHelp() {
-	fmt.Print(`pixel-fleet (cs) - Multi-machine agent session manager
+	// Build a per-app usage section dynamically from the registry. New apps
+	// added to internal/apps/builtin (or imported from out-of-tree modules)
+	// show up in help automatically.
+	var appLines strings.Builder
+	for _, a := range apps.All() {
+		flag := "         " // 9 spaces, matches " [--no-rc]" width
+		if a.SupportsRemoteControl() {
+			flag = " [--no-rc]"
+		}
+		appLines.WriteString(fmt.Sprintf("  cs %-8s <name> <machine> <path>%s  New %s session\n",
+			a.Name(), flag, a.Label()))
+	}
+	fmt.Printf(`pixel-fleet (cs) - Multi-machine agent session manager
 
 Usage:
   cs                                         Open the dashboard
-  cs claude <name> <machine> <path> [--no-rc]  New Claude session
-  cs codex  <name> <machine> <path> [--no-rc]  New Codex session
-  cs term   <name> <machine> <path>            New plain terminal session
-  cs ls                                      List all sessions across all machines
+%s  cs ls                                      List all sessions across all machines
   cs adopt <#> <name>                        Adopt orphaned session by number from cs ls
   cs scan                                    Scan machines for orphaned sessions
   cs doctor [machine...]                     Preflight checks (linger, tmux, claude, RC)
   cs kill <name>                             Kill a session by name
   cs kill-all                                Kill all sessions
-  cs help                                    Show this help
+  cs help                                    Show this help`, appLines.String())
+	fmt.Print(`
 
 Persistence and remote control:
   Remote sessions run inside a persistent tmux session (cs-remote) on the

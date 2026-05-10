@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
 )
@@ -535,15 +536,18 @@ func (m Model) totalInputFields() int {
 }
 
 // agentName returns the canonical agent string for the current selection.
+// The list of agents is driven by the registry — adding an app to
+// internal/apps/builtin (or by external import) automatically extends
+// the picker.
 func (m Model) agentName() string {
-	switch m.selectedAgent {
-	case 1:
-		return "codex"
-	case 2:
-		return "terminal"
-	default:
-		return "claude"
+	all := apps.All()
+	if len(all) == 0 {
+		return ""
 	}
+	if m.selectedAgent < 0 || m.selectedAgent >= len(all) {
+		return all[0].Name()
+	}
+	return all[m.selectedAgent].Name()
 }
 
 func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -596,7 +600,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Agent picker
 		if m.focusedInput == 3 {
-			if m.selectedAgent < 2 {
+			if m.selectedAgent < len(apps.All())-1 {
 				m.selectedAgent++
 			}
 			return m, nil
@@ -904,14 +908,15 @@ func (m Model) viewNewSession() string {
 	}
 	formParts = append(formParts, pathLbl, m.pathInput.View()+suggList, "")
 
-	// Agent picker
+	// Agent picker — driven by the apps registry, so adding an app to
+	// internal/apps/builtin extends the picker without touching the TUI.
 	agentLbl := promptLabelStyle.Render("Agent:    [↑↓ to select]")
 	if m.focusedInput == 3 {
 		agentLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Agent:    [↑↓ to select]")
 	}
-	agentChoices := []string{"claude", "codex", "terminal"}
+	allApps := apps.All()
 	var agentLines []string
-	for i, a := range agentChoices {
+	for i, a := range allApps {
 		prefix := "  "
 		style := dimStyle()
 		if i == m.selectedAgent {
@@ -922,7 +927,7 @@ func (m Model) viewNewSession() string {
 				style = lipgloss.NewStyle().Foreground(whiteColor)
 			}
 		}
-		agentLines = append(agentLines, style.Render(prefix+a))
+		agentLines = append(agentLines, style.Render(prefix+a.Name()))
 	}
 	formParts = append(formParts, agentLbl, strings.Join(agentLines, "\n"), "")
 
@@ -1017,13 +1022,7 @@ func (m Model) viewArchive() string {
 			if i == m.selectedArchived {
 				prefix = "▸ "
 			}
-			agentTag := claudeBadgeStyle.Render("CLAUDE")
-			switch s.Agent {
-			case "codex":
-				agentTag = codexBadgeStyle.Render("CODEX")
-			case "terminal":
-				agentTag = terminalBadgeStyle.Render("TERM")
-			}
+			agentTag := agentBadge(s.Agent)
 			machine := s.Machine
 			if machine == "" {
 				machine = "?"

@@ -8,17 +8,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AppBins configures the local and remote binary paths for one app.
+// Used by the generic `apps:` map for apps that don't have a hardcoded
+// well-known config field (Claude / Codex still keep theirs for
+// backward-compat).
+type AppBins struct {
+	LocalBin  string `yaml:"local_bin"`
+	RemoteBin string `yaml:"remote_bin"`
+}
+
 type Config struct {
 	RemoteBase        string        `yaml:"remote_base"`
 	LocalBase         string        `yaml:"local_base"`
 	LocalExtraPaths   []string      `yaml:"local_extra_paths"`
 	RefreshInterval   time.Duration `yaml:"refresh_interval"`
-	ClaudeBin         string        `yaml:"claude_bin"`
-	RemoteClaudeBin   string        `yaml:"remote_claude_bin"`
-	CodexBin          string        `yaml:"codex_bin"`
-	RemoteCodexBin    string        `yaml:"remote_codex_bin"`
-	SessionName       string        `yaml:"session_name"`
-	ScanTimeout       time.Duration `yaml:"scan_timeout"`
+	// Well-known per-app binary overrides. Kept for backward-compat with
+	// existing config.yaml files; the generic Apps map below covers
+	// anything else (including out-of-tree apps).
+	ClaudeBin       string `yaml:"claude_bin"`
+	RemoteClaudeBin string `yaml:"remote_claude_bin"`
+	CodexBin        string `yaml:"codex_bin"`
+	RemoteCodexBin  string `yaml:"remote_codex_bin"`
+	// Apps is a generic per-app override map keyed by canonical app name.
+	// Example:
+	//   apps:
+	//     aider:
+	//       local_bin: aider
+	//       remote_bin: /opt/aider/bin/aider
+	Apps              map[string]AppBins `yaml:"apps"`
+	SessionName       string             `yaml:"session_name"`
+	ScanTimeout       time.Duration      `yaml:"scan_timeout"`
 	// DiscoveryInterval controls how often the dashboard re-scans known
 	// machines in the background for orphaned cs sessions (alive on a
 	// remote, missing from the local store). Set to 0 to disable.
@@ -110,4 +129,38 @@ func (c *Config) IsRemoteControlEnabled() bool {
 		return true
 	}
 	return *c.RemoteControl
+}
+
+// BinFor returns the configured binary path for an app on either the local
+// (remote=false) or remote machine. Returns "" when the user hasn't set an
+// override — the caller (session.Manager) then falls back to the app's own
+// DefaultLocalBin / DefaultRemoteBin.
+//
+// The well-known fields (ClaudeBin, CodexBin, …) take precedence so that
+// existing config.yaml files keep working unchanged. The generic Apps map
+// is the fallback path for new and out-of-tree apps.
+func (c *Config) BinFor(appName string, remote bool) string {
+	switch appName {
+	case "claude":
+		if remote {
+			return c.RemoteClaudeBin
+		}
+		return c.ClaudeBin
+	case "codex":
+		if remote {
+			return c.RemoteCodexBin
+		}
+		return c.CodexBin
+	}
+	if c.Apps == nil {
+		return ""
+	}
+	bins, ok := c.Apps[appName]
+	if !ok {
+		return ""
+	}
+	if remote {
+		return bins.RemoteBin
+	}
+	return bins.LocalBin
 }

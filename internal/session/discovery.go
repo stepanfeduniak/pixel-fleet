@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 )
 
 // DiscoveredSession represents a Claude session found on a remote or local machine.
@@ -70,15 +72,16 @@ func parseScanOutput(machineName, output string) []DiscoveredSession {
 		}
 
 		sessionName := strings.TrimPrefix(parts[0], "SESSION:")
-		command := strings.ToLower(parts[4])
+		command := parts[4]
 
-		// Include windows running claude/codex OR any window in a cs-managed
-		// tmux session (legacy shared "cs-remote", or per-session
-		// "cs-<slug>-<id>"). The cs-managed check is needed because the
-		// foreground command might briefly be bash or a subprocess of
-		// the agent even though the session is one of ours.
+		// Include windows running an agent any registered app recognizes,
+		// OR any window in a cs-managed tmux session (legacy shared
+		// "cs-remote", or per-session "cs-<slug>-<id>"). The cs-managed
+		// check is needed because the foreground command might briefly be
+		// bash or a subprocess of the agent even though the session is
+		// one of ours.
 		isCsManaged := sessionName == "cs-remote" || strings.HasPrefix(sessionName, "cs-")
-		if !strings.Contains(command, "claude") && !strings.Contains(command, "codex") && !isCsManaged {
+		if !apps.AnyProcessMatches(command) && !isCsManaged {
 			continue
 		}
 
