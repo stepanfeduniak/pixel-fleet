@@ -1,4 +1,4 @@
-package skills
+package skillsviewer
 
 import (
 	"os"
