@@ -73,7 +73,9 @@ func main() {
 	//   `cs skills` is enough; the launch happens on home with no path.
 	if agent := apps.Normalize(args[0]); agent != "" {
 		app, _ := apps.Lookup(agent)
-		if app != nil && !app.RequiresPath() {
+		// requires_path can be overridden in config (apps.<name>.requires_path:
+		// false), so even a regular agent can opt out of needing a path.
+		if app != nil && !cfg.RequiresPathFor(app.Name(), app.RequiresPath()) {
 			name, machine, path := defaultsForViewer(args[1:], app.Name())
 			cmdNewAndDashboard(mgr, cfg, name, machine, path, noRC, agent)
 			return

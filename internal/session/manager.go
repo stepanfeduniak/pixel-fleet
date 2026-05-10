@@ -99,9 +99,20 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 		return nil, fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
-	// Resolve path
-	resolvedPath := m.resolvePath(machine, path)
-	log.Printf("Create session: name=%s machine=%s path=%s -> resolved=%s", name, machine, path, resolvedPath)
+	// Resolve path. Apps that don't require a path (skills viewer, app
+	// viewer, anything the user has flipped via config) get an empty
+	// resolvedPath when no path was provided — buildLocalCommand and
+	// buildRemoteCommand both skip the `cd` in that case.
+	app, _ := apps.Resolve(opts.Agent)
+	requiresPath := true
+	if app != nil {
+		requiresPath = m.cfg.RequiresPathFor(app.Name(), app.RequiresPath())
+	}
+	resolvedPath := ""
+	if path != "" || requiresPath {
+		resolvedPath = m.resolvePath(machine, path)
+	}
+	log.Printf("Create session: name=%s machine=%s path=%s -> resolved=%s requiresPath=%v", name, machine, path, resolvedPath, requiresPath)
 
 	// Check if session already exists
 	sessions, err := m.List()
@@ -113,9 +124,7 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 		}
 	}
 
-	// Resolve the app via the registry. Unknown / empty agents fall back to
-	// the default app (typically claude).
-	app, _ := apps.Resolve(opts.Agent)
+	// (app already resolved above for the requires-path check.)
 	agent := ""
 	if app != nil {
 		agent = app.Name()

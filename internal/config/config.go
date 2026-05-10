@@ -8,13 +8,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AppBins configures the local and remote binary paths for one app.
-// Used by the generic `apps:` map for apps that don't have a hardcoded
-// well-known config field (Claude / Codex still keep theirs for
-// backward-compat).
+// AppBins configures per-app overrides. Used by the generic `apps:` map
+// for apps that don't have a hardcoded well-known config field (Claude /
+// Codex still keep theirs for backward-compat). Despite the historical
+// name, this struct now carries more than just bin paths.
 type AppBins struct {
 	LocalBin  string `yaml:"local_bin"`
 	RemoteBin string `yaml:"remote_bin"`
+	// RequiresPath, if non-nil, overrides the app's built-in
+	// RequiresPath() default. Use a pointer so YAML can distinguish
+	// "unset" (→ defer to the app) from explicit true/false. Example:
+	//
+	//   apps:
+	//     claude:
+	//       requires_path: false   # let me launch claude without picking a project
+	RequiresPath *bool `yaml:"requires_path"`
 }
 
 type Config struct {
@@ -129,6 +137,22 @@ func (c *Config) IsRemoteControlEnabled() bool {
 		return true
 	}
 	return *c.RemoteControl
+}
+
+// RequiresPathFor returns the effective RequiresPath value for an app:
+// the user's config override if set, otherwise the app's own default.
+// Used by the dashboard form, CLI dispatch, and session launch so a
+// single config knob (`apps.<name>.requires_path: false`) flips path
+// requirement everywhere consistently.
+func (c *Config) RequiresPathFor(appName string, defaultVal bool) bool {
+	if c.Apps == nil {
+		return defaultVal
+	}
+	o, ok := c.Apps[appName]
+	if !ok || o.RequiresPath == nil {
+		return defaultVal
+	}
+	return *o.RequiresPath
 }
 
 // BinFor returns the configured binary path for an app on either the local
