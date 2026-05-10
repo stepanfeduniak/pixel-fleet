@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 )
 
@@ -71,11 +72,16 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 
 			s := sessions[idx]
 			isSelected := idx == selected
-			isCodex := s.Agent == "codex"
-			isTerminal := s.Agent == "terminal"
-			// Empty Agent (legacy / pre-Agent-field records) is treated as
-			// claude — that's the historical default.
-			isClaude := !isCodex && !isTerminal
+			// Resolve the app from the registry. Legacy sessions with an
+			// empty Agent fall back to the registry's default (typically
+			// claude — preserves the historical look).
+			app, _ := apps.Resolve(s.Agent)
+			var appColors apps.Colors
+			var appLabel string
+			if app != nil {
+				appColors = app.Colors()
+				appLabel = app.Label()
+			}
 
 			// Title bar: name + status + agent badge
 			statusStr := statusStyle(int(s.Status)).Render(
@@ -87,25 +93,12 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 			} else {
 				name = "  " + name
 			}
-			titleStyle := cellTitleStyle
-			switch {
-			case isCodex:
-				titleStyle = cellTitleStyle.Foreground(codexAccentColor)
-			case isTerminal:
-				titleStyle = cellTitleStyle.Foreground(terminalAccentColor)
-			case isClaude:
-				titleStyle = cellTitleStyle.Foreground(claudeAccentColor)
-			}
+			titleStyle := appTitleStyle(appColors)
 
 			// Build the always-visible suffix: status + agent badge.
 			suffix := "  " + statusStr
-			switch {
-			case isCodex:
-				suffix += "  " + codexBadgeStyle.Render("CODEX")
-			case isTerminal:
-				suffix += "  " + terminalBadgeStyle.Render("TERM")
-			case isClaude:
-				suffix += "  " + claudeBadgeStyle.Render("CLAUDE")
+			if appLabel != "" {
+				suffix += "  " + appBadgeStyle(appColors).Render(appLabel)
 			}
 
 			// Build the variable prefix: name + @machine. When this combo
@@ -160,26 +153,8 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 
 			cellContent := lipgloss.JoinVertical(lipgloss.Left, title, contentRendered)
 
-			// Apply border style — each agent (or terminal) gets its own color.
-			var borderStyle lipgloss.Style
-			switch {
-			case isCodex && isSelected:
-				borderStyle = cellBorderCodexSelectedStyle
-			case isCodex:
-				borderStyle = cellBorderCodexStyle
-			case isTerminal && isSelected:
-				borderStyle = cellBorderTerminalSelectedStyle
-			case isTerminal:
-				borderStyle = cellBorderTerminalStyle
-			case isClaude && isSelected:
-				borderStyle = cellBorderClaudeSelectedStyle
-			case isClaude:
-				borderStyle = cellBorderClaudeStyle
-			case isSelected:
-				borderStyle = cellBorderSelectedStyle
-			default:
-				borderStyle = cellBorderStyle
-			}
+			// Apply border style — each app gets its own color.
+			borderStyle := appCellBorder(appColors, isSelected)
 
 			cell := borderStyle.
 				Width(cellWidth).

@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
+)
 
 var (
 	// Colors - bright, high-contrast for dark terminals
@@ -29,92 +32,16 @@ var (
 			Foreground(whiteColor).
 			Bold(true)
 
-	// Codex-specific accent colors. Codex sessions get a distinct red
-	// look so they're unmistakable in a sea of claude sessions.
-	// SelectedColor is a near-white tint so the selection frame pops
-	// hard against the unselected red border.
-	codexBorderColor         = lipgloss.Color("#DC2626") // strong red, unselected
-	codexBorderSelectedColor = lipgloss.Color("#FECACA") // red-200, near-white tint, selected frame
-	codexAccentColor         = lipgloss.Color("#F87171") // bright red, title text/badge
-	codexBgColor             = lipgloss.Color("#7F1D1D") // dark red, badge background
-
-	// Claude-specific accent colors. Light sky-blue — pleasant and calm,
-	// clearly distinct from codex's red and the working-status indicator's
-	// medium blue (#60A5FA). SelectedColor goes near-white so the
-	// selection frame is unmistakable against the unselected border.
-	claudeBorderColor         = lipgloss.Color("#7DD3FC") // sky-300, unselected
-	claudeBorderSelectedColor = lipgloss.Color("#F0F9FF") // sky-50, near-white, selected frame
-	claudeAccentColor         = lipgloss.Color("#BAE6FD") // sky-200, title text/badge
-	claudeBgColor             = lipgloss.Color("#0C4A6E") // sky-900, badge bg
-
-	// Terminal (no-agent) accent colors. Green completes the stoplight:
-	// claude blue / codex red / terminal green. Green-400 unselected with
-	// a near-white green-100 selected frame to match the codex/claude
-	// luminance pattern.
-	terminalBorderColor         = lipgloss.Color("#4ADE80") // green-400, unselected
-	terminalBorderSelectedColor = lipgloss.Color("#DCFCE7") // green-100, near-white frame
-	terminalAccentColor         = lipgloss.Color("#86EFAC") // green-300, title/badge fg
-	terminalBgColor             = lipgloss.Color("#14532D") // green-900, badge bg
-
-	// Cell styles
+	// Generic cell border (for sessions whose Agent doesn't match a
+	// registered app — should be rare).
 	cellBorderStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderDim)
 
 	cellBorderSelectedStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
+				Border(lipgloss.DoubleBorder()).
 				BorderForeground(accentColor).
 				Bold(true)
-
-	cellBorderCodexStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(codexBorderColor)
-
-	// Selected codex cell: switch to DoubleBorder + near-white tint so
-	// the frame is obviously distinct from the unselected red rounded
-	// border. Bold prefix marker also helps.
-	cellBorderCodexSelectedStyle = lipgloss.NewStyle().
-					Border(lipgloss.DoubleBorder()).
-					BorderForeground(codexBorderSelectedColor).
-					Bold(true)
-
-	codexBadgeStyle = lipgloss.NewStyle().
-				Foreground(whiteColor).
-				Background(codexBgColor).
-				Bold(true).
-				Padding(0, 1)
-
-	cellBorderClaudeStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(claudeBorderColor)
-
-	// Selected claude cell: same idea — DoubleBorder + near-white sky
-	// tint. Stands out clearly against the soft sky-300 of unselected.
-	cellBorderClaudeSelectedStyle = lipgloss.NewStyle().
-					Border(lipgloss.DoubleBorder()).
-					BorderForeground(claudeBorderSelectedColor).
-					Bold(true)
-
-	cellBorderTerminalStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(terminalBorderColor)
-
-	cellBorderTerminalSelectedStyle = lipgloss.NewStyle().
-					Border(lipgloss.DoubleBorder()).
-					BorderForeground(terminalBorderSelectedColor).
-					Bold(true)
-
-	terminalBadgeStyle = lipgloss.NewStyle().
-				Foreground(whiteColor).
-				Background(terminalBgColor).
-				Bold(true).
-				Padding(0, 1)
-
-	claudeBadgeStyle = lipgloss.NewStyle().
-				Foreground(whiteColor).
-				Background(claudeBgColor).
-				Bold(true).
-				Padding(0, 1)
 
 	cellTitleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -173,4 +100,61 @@ func statusStyle(s int) lipgloss.Style {
 	default:
 		return statusUnknownStyle
 	}
+}
+
+// appCellBorder returns the rounded/double border style for a session's
+// cell, given the app's colors and whether the cell is selected. Selected
+// cells get a near-white tint and a DoubleBorder so the selection is
+// unmistakable against the unselected accent.
+func appCellBorder(c apps.Colors, selected bool) lipgloss.Style {
+	if c == (apps.Colors{}) {
+		// App didn't supply colors; use the framework defaults.
+		if selected {
+			return cellBorderSelectedStyle
+		}
+		return cellBorderStyle
+	}
+	if selected {
+		return lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(c.BorderSelected).
+			Bold(true)
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(c.Border)
+}
+
+// appTitleStyle returns the title text style for a session's name. Falls
+// back to the white-bold default if the app didn't supply an accent color.
+func appTitleStyle(c apps.Colors) lipgloss.Style {
+	if c.Accent == "" {
+		return cellTitleStyle
+	}
+	return cellTitleStyle.Foreground(c.Accent)
+}
+
+// appBadgeStyle returns the badge style (background + bold white text) for
+// an app's label. Falls back to dim borderDim background if no colors.
+func appBadgeStyle(c apps.Colors) lipgloss.Style {
+	bg := c.Bg
+	if bg == "" {
+		bg = borderDim
+	}
+	return lipgloss.NewStyle().
+		Foreground(whiteColor).
+		Background(bg).
+		Bold(true).
+		Padding(0, 1)
+}
+
+// agentBadge renders the registered app's badge for a given agent name.
+// Sessions with an empty Agent (legacy / pre-Agent-field records) are
+// treated as the registry's default app — historically that's claude.
+func agentBadge(agent string) string {
+	app, _ := apps.Resolve(agent)
+	if app == nil {
+		return ""
+	}
+	return appBadgeStyle(app.Colors()).Render(app.Label())
 }
