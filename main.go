@@ -12,7 +12,7 @@ import (
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps/appviewer"
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/builtin"
-	"github.com/stepanfeduniak/pixel-fleet/internal/apps/skills"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps/skillsviewer"
 	"github.com/stepanfeduniak/pixel-fleet/internal/config"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
@@ -119,7 +119,7 @@ func main() {
 		// Re-entry point: a session window invoked us to render the
 		// skills viewer TUI. We never return — when the user quits the
 		// TUI, the window closes.
-		if err := skills.Run(); err != nil {
+		if err := skillsviewer.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "skills viewer: %v\n", err)
 			os.Exit(1)
 		}
@@ -459,7 +459,7 @@ func cmdHelp() {
 		if a.IsSystem() {
 			usage = "                       " // 23 spaces — keeps trailing column aligned
 		}
-		appLines.WriteString(fmt.Sprintf("  cs %-8s %s%s  Open %s\n",
+		appLines.WriteString(fmt.Sprintf("  cs %-13s %s%s  Open %s\n",
 			a.Name(), usage, flag, a.Label()))
 	}
 	fmt.Printf(`pixel-fleet (cs) - Multi-machine agent session manager

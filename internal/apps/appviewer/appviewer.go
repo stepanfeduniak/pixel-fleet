@@ -23,9 +23,9 @@ func init() {
 
 type app struct{}
 
-func (app) Name() string                { return "apps" }
-func (app) Aliases() []string           { return []string{"app", "appviewer"} }
-func (app) Label() string               { return "APPS" }
+func (app) Name() string                { return "app-viewer" }
+func (app) Aliases() []string           { return []string{"apps", "app", "appviewer"} }
+func (app) Label() string               { return "APP-VIEWER" }
 func (app) DefaultLocalBin() string     { return "" }
 func (app) DefaultRemoteBin() string    { return "" }
 func (app) NeedsBin() bool              { return false }

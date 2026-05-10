@@ -1,9 +1,10 @@
-// Package skills registers the Skills Viewer app and provides its TUI.
+// Package skillsviewer registers the skills-viewer app and provides its
+// TUI.
 //
-// The Skills Viewer is an in-process viewer (like the dashboard), not an
+// The skills viewer is an in-process viewer (like the dashboard), not an
 // external binary. The launch script invokes the cs binary with the
 // `--skills-viewer` flag, which main.go routes back into Run.
-package skills
+package skillsviewer
 
 import (
 	"fmt"
@@ -21,9 +22,9 @@ func init() {
 
 type app struct{}
 
-func (app) Name() string             { return "skills" }
-func (app) Aliases() []string        { return []string{"skill"} }
-func (app) Label() string            { return "SKILLS" }
+func (app) Name() string             { return "skills-viewer" }
+func (app) Aliases() []string        { return []string{"skills", "skill"} }
+func (app) Label() string            { return "SKILLS-VIEWER" }
 func (app) DefaultLocalBin() string  { return "" }
 func (app) DefaultRemoteBin() string { return "" }
 // NeedsBin is false: the launch is the cs binary itself, which we resolve

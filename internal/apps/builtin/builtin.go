@@ -12,6 +12,6 @@ import (
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/appviewer"
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/claude"
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/codex"
-	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/skills"
+	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/skillsviewer"
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/terminal"
 )
