@@ -44,8 +44,13 @@ type Model struct {
 	pathInput    textinput.Model
 	focusedInput int // 0=name, 1=machine, 2=path, 3=agent
 
-	// Agent picker: 0=claude (default), 1=codex, 2=terminal
-	selectedAgent int
+	// Agent picker. selectedAgent indexes into newSessionApps — the
+	// filtered list captured when the user pressed `n` (workflow agents)
+	// or `N` (system / utility apps). Splitting the list keeps the
+	// agent picker focused: most invocations are claude/codex/term, and
+	// the rarer viewer apps live behind shift+n.
+	selectedAgent   int
+	newSessionApps  []apps.App
 
 	// Machine selection
 	machines        []session.Machine
@@ -440,17 +445,17 @@ func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case msg.String() == "n":
-		m.mode = ModeNewSession
-		m.nameInput.Reset()
-		m.pathInput.Reset()
-		m.pathSuggestions = nil
-		m.selectedSugg = 0
-		m.selectedMachine = 0
-		m.focusedInput = 0 // start at name input
-		m.nameInput.Focus()
-		m.pathInput.Blur()
-		m.machines = session.ListMachines() // refresh
-		return m, textinput.Blink
+		agents, _ := apps.FilterByKind()
+		return m.openNewSession(agents)
+
+	case msg.String() == "N":
+		// Shift+N: pick a system / viewer app (skills, app viewer).
+		// Kept off the main `n` flow so the common path stays minimal.
+		_, system := apps.FilterByKind()
+		if len(system) == 0 {
+			return m, nil
+		}
+		return m.openNewSession(system)
 
 	case msg.String() == "x":
 		if len(m.sessions) > 0 {
@@ -529,6 +534,25 @@ func (m Model) handleArchiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openNewSession enters ModeNewSession with the given app list as the
+// available agents. Used by `n` (workflow agents) and `N` (system /
+// viewer apps).
+func (m Model) openNewSession(available []apps.App) (Model, tea.Cmd) {
+	m.mode = ModeNewSession
+	m.nameInput.Reset()
+	m.pathInput.Reset()
+	m.pathSuggestions = nil
+	m.selectedSugg = 0
+	m.selectedMachine = 0
+	m.selectedAgent = 0
+	m.focusedInput = 0
+	m.nameInput.Focus()
+	m.pathInput.Blur()
+	m.machines = session.ListMachines() // refresh
+	m.newSessionApps = available
+	return m, textinput.Blink
+}
+
 // totalInputFields returns the number of input steps in the new session flow.
 // Fields: 0=name, 1=machine, 2=path, 3=agent
 func (m Model) totalInputFields() int {
@@ -536,18 +560,18 @@ func (m Model) totalInputFields() int {
 }
 
 // agentName returns the canonical agent string for the current selection.
-// The list of agents is driven by the registry — adding an app to
-// internal/apps/builtin (or by external import) automatically extends
-// the picker.
+// Indexes into m.newSessionApps — the filtered list captured at the
+// moment the user opened the new-session form (workflow apps for `n`,
+// system apps for `N`).
 func (m Model) agentName() string {
-	all := apps.All()
-	if len(all) == 0 {
+	list := m.newSessionApps
+	if len(list) == 0 {
 		return ""
 	}
-	if m.selectedAgent < 0 || m.selectedAgent >= len(all) {
-		return all[0].Name()
+	if m.selectedAgent < 0 || m.selectedAgent >= len(list) {
+		return list[0].Name()
 	}
-	return all[m.selectedAgent].Name()
+	return list[m.selectedAgent].Name()
 }
 
 func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -600,7 +624,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Agent picker
 		if m.focusedInput == 3 {
-			if m.selectedAgent < len(apps.All())-1 {
+			if m.selectedAgent < len(m.newSessionApps)-1 {
 				m.selectedAgent++
 			}
 			return m, nil
@@ -661,11 +685,17 @@ func (m Model) tryCreateSession() (Model, tea.Cmd) {
 	if m.selectedMachine < len(m.machines) {
 		machine = m.machines[m.selectedMachine].Name
 	}
-	if name == "" || machine == "" || path == "" {
-		return m, nil
-	}
 
 	agent := m.agentName()
+	// Viewer apps (skills, app viewer) don't need a working path. Allow
+	// an empty path field for them; require it for everything else.
+	pathRequired := true
+	if app, ok := apps.Lookup(agent); ok {
+		pathRequired = app.RequiresPath()
+	}
+	if name == "" || machine == "" || (pathRequired && path == "") {
+		return m, nil
+	}
 
 	log.Printf("Creating session: name=%s machine=%s path=%s agent=%s", name, machine, path, agent)
 	_, err := m.manager.CreateWithOptions(name, machine, path, session.CreateOptions{Agent: agent})
@@ -816,8 +846,9 @@ func (m Model) viewGrid() string {
 	grid := renderGrid(m.sessions, m.selected, m.width, gridHeight)
 
 	footer := footerStyle.Width(m.width).Render(
-		fmt.Sprintf(" %s new  %s focus  %s kill  %s archive  %s archive view  %s fetch all  %s refresh  %s detach",
+		fmt.Sprintf(" %s new  %s system  %s focus  %s kill  %s archive  %s archive view  %s fetch all  %s refresh  %s detach",
 			footerKeyStyle.Render("[n]"),
+			footerKeyStyle.Render("[N]"),
 			footerKeyStyle.Render("[enter]"),
 			footerKeyStyle.Render("[x]"),
 			footerKeyStyle.Render("[a]"),
@@ -914,7 +945,7 @@ func (m Model) viewNewSession() string {
 	if m.focusedInput == 3 {
 		agentLbl = lipgloss.NewStyle().Foreground(whiteColor).Bold(true).Underline(true).Render("Agent:    [↑↓ to select]")
 	}
-	allApps := apps.All()
+	allApps := m.newSessionApps
 	var agentLines []string
 	for i, a := range allApps {
 		prefix := "  "
@@ -973,7 +1004,8 @@ func (m Model) viewHelp() string {
 		"",
 		"  ↑↓←→ / hjkl    Navigate grid",
 		"  enter           Focus into selected session",
-		"  n               Create new session",
+		"  n               New session (claude/codex/term)",
+		"  N (shift+n)     New system app (skills/app viewer)",
 		"  x               Kill selected session",
 		"  a               Archive selected (hide; nothing stops)",
 		"  A               Open archive view",

@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps/appviewer"
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/builtin"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps/skills"
 	"github.com/stepanfeduniak/pixel-fleet/internal/config"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
@@ -64,9 +66,18 @@ func main() {
 	}
 
 	// First check if args[0] is a registered app's name or alias. Any app
-	// registered via apps.Register automatically gets its own subcommand —
-	// `cs <appname> <name> <machine> <path>` — without further wiring.
+	// registered via apps.Register automatically gets its own subcommand.
+	//
+	// Session apps (claude, codex, terminal): require <name> <machine> <path>.
+	// Viewer apps (skills, app-viewer): all positional args optional —
+	//   `cs skills` is enough; the launch happens on home with no path.
 	if agent := apps.Normalize(args[0]); agent != "" {
+		app, _ := apps.Lookup(agent)
+		if app != nil && !app.RequiresPath() {
+			name, machine, path := defaultsForViewer(args[1:], app.Name())
+			cmdNewAndDashboard(mgr, cfg, name, machine, path, noRC, agent)
+			return
+		}
 		if len(args) < 4 {
 			fmt.Fprintf(os.Stderr, "Usage: cs %s <name> <machine> <path>\n", args[0])
 			fmt.Fprintf(os.Stderr, "Example: cs %s training gpu-01 ~/ml-project\n", args[0])
@@ -102,11 +113,64 @@ func main() {
 		cmdHelp()
 	case "--dashboard-tui":
 		cmdRunTUI(mgr, cfg)
+	case "--skills-viewer":
+		// Re-entry point: a session window invoked us to render the
+		// skills viewer TUI. We never return — when the user quits the
+		// TUI, the window closes.
+		if err := skills.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "skills viewer: %v\n", err)
+			os.Exit(1)
+		}
+	case "--app-viewer":
+		if err := appviewer.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "app viewer: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
 		cmdHelp()
 		os.Exit(1)
 	}
+}
+
+// defaultsForViewer fills in sensible defaults for viewer apps (skills,
+// app viewer, …) that don't require a working path. The user can still
+// override any positional arg explicitly:
+//
+//   cs skills                            -> name="skills", machine="home", path=""
+//   cs skills foo                        -> name="foo",    machine="home", path=""
+//   cs skills foo gpu-01                 -> name="foo",    machine="gpu-01", path=""
+//   cs skills foo gpu-01 ~/x             -> name="foo",    machine="gpu-01", path="~/x"
+//
+// The default name is the app's canonical name (e.g. "skills"), so a
+// second `cs skills` invocation returns to the same window instead of
+// creating a duplicate. Args that look like flags (start with `-`) are
+// ignored to keep `cs skills --help` from being interpreted as
+// `cs skills <name=--help>`.
+func defaultsForViewer(extra []string, appName string) (name, machine, path string) {
+	name, machine, path = appName, "home", ""
+	pos := positional(extra)
+	if len(pos) >= 1 {
+		name = pos[0]
+	}
+	if len(pos) >= 2 {
+		machine = pos[1]
+	}
+	if len(pos) >= 3 {
+		path = pos[2]
+	}
+	return name, machine, path
+}
+
+func positional(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func cmdDashboard(mgr *session.Manager, cfg *config.Config) {
@@ -387,8 +451,14 @@ func cmdHelp() {
 		if a.SupportsRemoteControl() {
 			flag = " [--no-rc]"
 		}
-		appLines.WriteString(fmt.Sprintf("  cs %-8s <name> <machine> <path>%s  New %s session\n",
-			a.Name(), flag, a.Label()))
+		// System apps don't need a path — show short-form usage so users
+		// don't get tripped up by "<machine> <path>" they don't need.
+		usage := "<name> <machine> <path>"
+		if a.IsSystem() {
+			usage = "                       " // 23 spaces — keeps trailing column aligned
+		}
+		appLines.WriteString(fmt.Sprintf("  cs %-8s %s%s  Open %s\n",
+			a.Name(), usage, flag, a.Label()))
 	}
 	fmt.Printf(`pixel-fleet (cs) - Multi-machine agent session manager
 

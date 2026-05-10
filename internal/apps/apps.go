@@ -120,6 +120,37 @@ type App interface {
 	// rely on the framework's default install + version checks (which it
 	// auto-generates when NeedsBin() is true).
 	DoctorProbes() []Probe
+
+	// RequiresPath reports whether this app needs a working directory at
+	// launch. Most apps (claude, codex, terminal) launch inside a project
+	// — return true. In-process viewer apps (skills viewer, app viewer)
+	// don't care about cwd — return false. The dashboard's new-session
+	// flow uses this to decide whether to prompt for a path; the CLI
+	// dispatch uses it to allow short-form invocations (e.g. `cs skills`
+	// with no positional args).
+	RequiresPath() bool
+
+	// IsSystem reports whether this app is a system / utility app
+	// (skills viewer, app viewer, …) as opposed to a workflow agent
+	// (claude, codex, terminal). The dashboard splits the new-session
+	// flow on this: `n` opens the agent picker, `Shift+N` opens the
+	// system-app picker. The two picker columns also keep the dashboard
+	// header from being cluttered with utilities the user rarely opens.
+	IsSystem() bool
+}
+
+// FilterByKind returns apps split into agent (IsSystem=false) and system
+// (IsSystem=true) lists, preserving registration order within each group.
+// The dashboard uses this to drive its two picker flows.
+func FilterByKind() (agents, system []App) {
+	for _, a := range All() {
+		if a.IsSystem() {
+			system = append(system, a)
+		} else {
+			agents = append(agents, a)
+		}
+	}
+	return agents, system
 }
 
 // registry holds the registered apps. Built-ins register at init(); external

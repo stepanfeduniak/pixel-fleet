@@ -22,6 +22,8 @@ func (app) DefaultRemoteBin() string { return "codex" }
 func (app) NeedsBin() bool           { return true }
 // Codex has no claude.ai/code bridge — the cs RC bootstrap stays off.
 func (app) SupportsRemoteControl() bool { return false }
+func (app) RequiresPath() bool          { return true }
+func (app) IsSystem() bool              { return false }
 
 // Codex sessions wear strong red so they're unmistakable in a sea of claude
 // blue. SelectedColor is red-200, a near-white tint that pops hard against

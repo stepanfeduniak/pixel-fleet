@@ -24,6 +24,8 @@ func (app) DefaultLocalBin() string     { return "" }
 func (app) DefaultRemoteBin() string    { return "" }
 func (app) NeedsBin() bool              { return false }
 func (app) SupportsRemoteControl() bool { return false }
+func (app) RequiresPath() bool          { return true }
+func (app) IsSystem() bool              { return false }
 
 // Green completes the stoplight: claude blue, codex red, terminal green.
 func (app) Colors() apps.Colors {
