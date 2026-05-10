@@ -687,11 +687,12 @@ func (m Model) tryCreateSession() (Model, tea.Cmd) {
 	}
 
 	agent := m.agentName()
-	// Viewer apps (skills, app viewer) don't need a working path. Allow
-	// an empty path field for them; require it for everything else.
+	// Viewer apps don't need a working path. Regular agents can also
+	// opt out via config (apps.<name>.requires_path: false), so use the
+	// effective value rather than the app's own default.
 	pathRequired := true
 	if app, ok := apps.Lookup(agent); ok {
-		pathRequired = app.RequiresPath()
+		pathRequired = m.manager.Config().RequiresPathFor(app.Name(), app.RequiresPath())
 	}
 	if name == "" || machine == "" || (pathRequired && path == "") {
 		return m, nil
