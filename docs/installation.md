@@ -46,30 +46,49 @@ Re-source the rc file and verify again.
 
 ---
 
-## 3. Set up each remote machine
+## 3. The apps
+
+`cs` is a launcher. The actual work happens inside one of these apps,
+which you pick per session (`cs <app> <name> <machine> <path>`).
+
+| App        | What it is                          | Needs binary?  | Install guide                |
+| ---------- | ----------------------------------- | -------------- | ---------------------------- |
+| `claude`   | Claude Code CLI                     | yes — `claude` | [apps/claude.md](apps/claude.md)     |
+| `codex`    | OpenAI Codex CLI                    | yes — `codex`  | [apps/codex.md](apps/codex.md)       |
+| `terminal` | Plain login shell, no agent         | no             | [apps/terminal.md](apps/terminal.md) |
+| `apps`     | Built-in: browse registered apps    | no             | [apps/apps.md](apps/apps.md)         |
+| `skills`   | Built-in: browse `~/.claude/skills` | no             | [apps/skills.md](apps/skills.md)     |
+
+**Ask the user which agents they want on which machines** before
+installing anything. Then open the matching per-app guide above and
+follow it — each one covers local install, remote install via ssh, and
+verification with `cs doctor`.
+
+---
+
+## 4. Set up each remote machine
 
 For every SSH host alias in `~/.ssh/config` the user plans to run
 sessions on, do this **once per machine**:
 
 ```bash
-# 3a. Enable systemd user-linger so tmux survives SSH drops
+# 4a. Enable systemd user-linger so tmux survives SSH drops
 ssh <machine> 'sudo loginctl enable-linger $USER'
 
-# 3b. Make sure tmux is installed
+# 4b. Verify tmux is installed
 ssh <machine> 'command -v tmux || echo MISSING'
 
-# 3c. Make sure the agents they want are installed
+# 4c. Verify the agents the user wants on this machine
 ssh <machine> 'command -v claude || echo MISSING'
 ssh <machine> 'command -v codex  || echo MISSING'
 ```
 
-**Ask the user which agents they want on which machines** before
-installing anything remotely. Don't push `claude` or `codex` onto a
-machine the user didn't ask for.
+For each `MISSING`, install that tool on the remote using the same
+commands from section 3 (run them via `ssh <machine> '...'`).
 
 ---
 
-## 4. Verify the whole fleet
+## 5. Verify the whole fleet
 
 ```bash
 cs doctor
@@ -81,14 +100,14 @@ Every check should be `✓`. Common failures and fixes:
 | --------- | --------------------------------------------------------- |
 | linger    | `ssh <machine> 'sudo loginctl enable-linger $USER'`       |
 | tmux      | install tmux on the remote (`sudo apt install tmux`, etc.)|
-| claude    | install/upgrade `claude-code` on the remote               |
-| codex     | install `codex` on the remote                             |
+| claude    | re-run section 3a on the failing machine                  |
+| codex     | re-run section 3b on the failing machine                  |
 
 Apply the fix, then re-run `cs doctor` until everything passes.
 
 ---
 
-## 5. Hand off to the user
+## 6. Hand off to the user
 
 Once `cs doctor` is clean, tell the user:
 
