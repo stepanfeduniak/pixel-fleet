@@ -114,12 +114,16 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 	}
 	log.Printf("Create session: name=%s machine=%s path=%s -> resolved=%s requiresPath=%v", name, machine, path, resolvedPath, requiresPath)
 
-	// Check if session already exists
-	sessions, err := m.List()
+	// Check if session already exists. Use AllWindowNames (raw tmux state,
+	// includes archived) rather than List() — an archived session whose
+	// local viewer is still running (e.g. rebuilt by auto-restore) would
+	// be invisible to List() but tmux still has the window, and creating
+	// a second window with the same name produces an unreachable duplicate.
+	existing, err := m.AllWindowNames()
 	if err == nil {
-		for _, s := range sessions {
-			if s.Name == name {
-				return &s, fmt.Errorf("session %q already exists", name)
+		for _, n := range existing {
+			if n == name {
+				return nil, fmt.Errorf("session %q already exists (may be archived)", name)
 			}
 		}
 	}
@@ -299,35 +303,57 @@ func (m *Manager) setArchived(name string, archived bool) error {
 // remote cs-remote tmux session so the Claude process actually stops.
 // The lookup walks both the live local windows AND the persistent store so
 // sessions whose local viewer has been closed can still be killed.
+//
+// Local windows are enumerated from raw tmux.ListWindows (not List, which
+// dedupes) and killed by index, so duplicate-named windows — created by
+// historical archived-collision bugs or external tmux activity — all get
+// removed in a single Kill call instead of leaving a "ghost" behind.
 func (m *Manager) Kill(name string) error {
 	type target struct {
-		windowName string
-		record     SessionRecord
-		hasRecord  bool
-		hasLocal   bool
+		windowName   string
+		record       SessionRecord
+		hasRecord    bool
+		localIndices []int
 	}
 
-	// Collect candidates from local windows and store records.
+	matches := func(n string) bool {
+		return n == name || strings.Contains(n, name)
+	}
+
 	seen := make(map[string]*target)
-	local, _ := m.List()
-	for _, s := range local {
-		if s.Name == name || strings.Contains(s.Name, name) {
-			t := &target{windowName: s.Name, hasLocal: true}
-			if rec, ok := m.store.Lookup(s.Name); ok {
-				t.record = rec
-				t.hasRecord = true
+
+	// Enumerate every tmux window (no dedupe) so duplicate names produce
+	// one entry per index.
+	if windows, err := tmux.ListWindows(m.cfg.SessionName); err == nil {
+		for _, w := range windows {
+			if w.Name == "dashboard" || w.Name == "bash" {
+				continue
 			}
-			seen[s.Name] = t
+			if !matches(w.Name) {
+				continue
+			}
+			t, ok := seen[w.Name]
+			if !ok {
+				t = &target{windowName: w.Name}
+				if rec, ok := m.store.Lookup(w.Name); ok {
+					t.record = rec
+					t.hasRecord = true
+				}
+				seen[w.Name] = t
+			}
+			t.localIndices = append(t.localIndices, w.Index)
 		}
 	}
+
 	for _, rec := range m.store.Load() {
-		if rec.Name == name || strings.Contains(rec.Name, name) {
-			if t, ok := seen[rec.Name]; ok {
-				t.record = rec
-				t.hasRecord = true
-			} else {
-				seen[rec.Name] = &target{windowName: rec.Name, record: rec, hasRecord: true}
-			}
+		if !matches(rec.Name) {
+			continue
+		}
+		if t, ok := seen[rec.Name]; ok {
+			t.record = rec
+			t.hasRecord = true
+		} else {
+			seen[rec.Name] = &target{windowName: rec.Name, record: rec, hasRecord: true}
 		}
 	}
 
@@ -336,16 +362,18 @@ func (m *Manager) Kill(name string) error {
 	}
 
 	for _, t := range seen {
-		// Kill the remote tmux first.
+		// Kill the remote tmux first (once per name, even if multiple
+		// duplicate local windows exist).
 		if t.hasRecord && t.record.Machine != "" && t.record.Machine != "home" {
 			if err := m.killRemoteForRecord(t.record); err != nil {
 				log.Printf("warning: remote kill failed for %s on %s: %v", t.windowName, t.record.Machine, err)
 			}
 		}
-		// Kill the local viewer if present.
-		if t.hasLocal {
-			if err := tmux.KillWindow(m.cfg.SessionName, t.windowName); err != nil {
-				log.Printf("warning: local window kill failed for %s: %v", t.windowName, err)
+		// Kill every local window with this name. Targeting by index
+		// because tmux name-targeting hits only one of N duplicates.
+		for _, idx := range t.localIndices {
+			if err := tmux.KillWindowByIndex(m.cfg.SessionName, idx); err != nil {
+				log.Printf("warning: local window kill failed for %s (index %d): %v", t.windowName, idx, err)
 			}
 		}
 		// Clean up git worktree if this session used one.

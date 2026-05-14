@@ -72,6 +72,15 @@ func KillWindow(session, name string) error {
 	return cmd.Run()
 }
 
+// KillWindowByIndex kills a window by its numeric index. Required when two
+// windows in a session share the same name — name-based targeting hits only
+// one and is non-deterministic about which.
+func KillWindowByIndex(session string, index int) error {
+	target := fmt.Sprintf("%s:%d", session, index)
+	cmd := exec.Command("tmux", "kill-window", "-t", target)
+	return cmd.Run()
+}
+
 // KillSession kills the entire tmux session.
 func KillSession(session string) error {
 	cmd := exec.Command("tmux", "kill-session", "-t", session)
