@@ -53,6 +53,11 @@ func NewModel(src Source) Model {
 	return Model{src: src}
 }
 
+// Selected returns the currently-highlighted list index. Useful for
+// wrapping models that want to know which item the user is sitting on
+// (e.g. to act on it via a key the viewer doesn't otherwise handle).
+func (m Model) Selected() int { return m.selected }
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -215,9 +220,11 @@ func (m Model) renderList(width, height int) string {
 		lines = append(lines, "")
 	}
 
+	// lipgloss adds the border (2 cols / 2 rows) on top of Width/Height.
+	// Subtract 2 so the rendered panel is exactly width × height.
 	return panelStyle(m.focus == focusList).
-		Width(width).
-		Height(height).
+		Width(width - 2).
+		Height(innerH).
 		Render(strings.Join(lines, "\n"))
 }
 
@@ -260,8 +267,8 @@ func (m Model) renderDetail(width, height int) string {
 	}
 
 	return panelStyle(m.focus == focusDetail).
-		Width(width).
-		Height(height).
+		Width(width - 2).
+		Height(innerH).
 		Render(strings.Join(wrapped, "\n"))
 }
 

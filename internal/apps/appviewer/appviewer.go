@@ -14,7 +14,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
-	"github.com/stepanfeduniak/pixel-fleet/internal/apps/viewerui"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps/installables"
 )
 
 func init() {
@@ -55,8 +55,14 @@ func (a *app) ProcessMatches(processName string) bool { return false }
 func (a *app) DoctorProbes() []apps.Probe              { return nil }
 
 // Run starts the app viewer TUI. Blocks until the user quits.
+//
+// The viewer renders through the shared installables.Run wrapper so the
+// user can press `i` to switch into a library-install picker (see
+// Installables() for the entries — Codex CLI, Claude Code).
+// Selecting an installable spawns a new tmux window in the local cs
+// session running Claude with the install prompt.
 func Run() error {
-	return viewerui.Run(&source{apps: apps.All()})
+	return installables.Run(&source{apps: apps.All()}, Installables())
 }
 
 type source struct {
@@ -64,7 +70,7 @@ type source struct {
 }
 
 func (s *source) Title() string {
-	return fmt.Sprintf("App Viewer   %d registered", len(s.apps))
+	return fmt.Sprintf("App Viewer   %d registered   [i] install CLI", len(s.apps))
 }
 func (s *source) Count() int { return len(s.apps) }
 

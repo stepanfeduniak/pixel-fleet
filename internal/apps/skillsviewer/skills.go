@@ -13,7 +13,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
-	"github.com/stepanfeduniak/pixel-fleet/internal/apps/viewerui"
+	"github.com/stepanfeduniak/pixel-fleet/internal/apps/installables"
 )
 
 func init() {
@@ -86,8 +86,14 @@ func (app) DoctorProbes() []apps.Probe {
 
 // Run starts the skills viewer TUI. main.go calls this when invoked with
 // `--skills-viewer`. Blocks until the user quits.
+//
+// The viewer renders through the shared installables.Run wrapper, which
+// adds an `i` keybind that switches into a library-install picker (see
+// Installables() for the entries). Selecting an installable spawns a
+// new tmux window in the local cs session running Claude with an
+// install prompt.
 func Run() error {
-	return viewerui.Run(&source{skills: Discover()})
+	return installables.Run(&source{skills: Discover()}, Installables())
 }
 
 // source adapts the Skill list to viewerui.Source.
@@ -96,7 +102,7 @@ type source struct {
 }
 
 func (s *source) Title() string {
-	return fmt.Sprintf("Skills Viewer   %d installed", len(s.skills))
+	return fmt.Sprintf("Skills Viewer   %d installed   [i] install library", len(s.skills))
 }
 func (s *source) Count() int { return len(s.skills) }
 

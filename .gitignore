@@ -10,3 +10,6 @@
 
 # Logs
 *.log
+
+# Local-only apps (kept off main while WIP)
+/internal/apps/research/
