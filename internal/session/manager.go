@@ -316,36 +316,60 @@ func (m *Manager) Kill(name string) error {
 		localIndices []int
 	}
 
+	windows, _ := tmux.ListWindows(m.cfg.SessionName)
+	records := m.store.Load()
+
+	// Prefer an exact name match. Substring matching is a convenience for
+	// `cs kill <partial>` on the CLI, but it's a footgun: `kill app` would
+	// also take down `app-viewer`/`apps`. So only fall back to substring
+	// matching when nothing matches the name exactly. The dashboard always
+	// passes the exact (pinned) session name, so it never hits the fallback.
+	exact := false
+	for _, w := range windows {
+		if w.Name == name {
+			exact = true
+			break
+		}
+	}
+	if !exact {
+		for _, rec := range records {
+			if rec.Name == name {
+				exact = true
+				break
+			}
+		}
+	}
 	matches := func(n string) bool {
-		return n == name || strings.Contains(n, name)
+		if exact {
+			return n == name
+		}
+		return strings.Contains(n, name)
 	}
 
 	seen := make(map[string]*target)
 
 	// Enumerate every tmux window (no dedupe) so duplicate names produce
 	// one entry per index.
-	if windows, err := tmux.ListWindows(m.cfg.SessionName); err == nil {
-		for _, w := range windows {
-			if w.Name == "dashboard" || w.Name == "bash" {
-				continue
-			}
-			if !matches(w.Name) {
-				continue
-			}
-			t, ok := seen[w.Name]
-			if !ok {
-				t = &target{windowName: w.Name}
-				if rec, ok := m.store.Lookup(w.Name); ok {
-					t.record = rec
-					t.hasRecord = true
-				}
-				seen[w.Name] = t
-			}
-			t.localIndices = append(t.localIndices, w.Index)
+	for _, w := range windows {
+		if w.Name == "dashboard" || w.Name == "bash" {
+			continue
 		}
+		if !matches(w.Name) {
+			continue
+		}
+		t, ok := seen[w.Name]
+		if !ok {
+			t = &target{windowName: w.Name}
+			if rec, ok := m.store.Lookup(w.Name); ok {
+				t.record = rec
+				t.hasRecord = true
+			}
+			seen[w.Name] = t
+		}
+		t.localIndices = append(t.localIndices, w.Index)
 	}
 
-	for _, rec := range m.store.Load() {
+	for _, rec := range records {
 		if !matches(rec.Name) {
 			continue
 		}
