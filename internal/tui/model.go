@@ -51,6 +51,14 @@ type Model struct {
 	mode            Mode
 	err             error
 
+	// killTarget pins the session name chosen for a kill at the moment the
+	// user presses `x`. The background refresh tick reassigns and reorders
+	// m.sessions while the confirm dialog is open (auto-restore can spawn a
+	// new window between `x` and `y`), so resolving the target by the live
+	// m.sessions[m.selected] index would kill whatever slid into that slot
+	// instead of what the user selected. Pin by identity, not position.
+	killTarget string
+
 	// New session inputs: name, machine, path. focusedInput uses the
 	// fieldXxx constants below so the order can be tweaked without
 	// hunting magic numbers across the file.
@@ -483,7 +491,10 @@ func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openNewSession(system)
 
 	case msg.String() == "x":
-		if len(m.sessions) > 0 {
+		if len(m.sessions) > 0 && m.selected < len(m.sessions) {
+			// Capture the target by name now — m.selected is a positional
+			// index into a list the refresh tick reorders out from under us.
+			m.killTarget = m.sessions[m.selected].Name
 			m.mode = ModeConfirmKill
 		}
 
@@ -731,16 +742,21 @@ func (m Model) handleConfirmKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		var cmd tea.Cmd
-		if m.selected < len(m.sessions) {
-			// Kill off the event loop: it does a remote tmux kill over SSH,
-			// which can take a few seconds against an unreachable host. Run
-			// inline and the whole dashboard freezes until it returns.
-			cmd = m.runKill(m.sessions[m.selected].Name)
+		if m.killTarget != "" {
+			// Kill the name pinned when `x` was pressed, NOT the live
+			// m.sessions[m.selected] — a background refresh may have
+			// reordered the grid while this dialog was open. Kill off the
+			// event loop: it does a remote tmux kill over SSH, which can take
+			// a few seconds against an unreachable host. Run inline and the
+			// whole dashboard freezes until it returns.
+			cmd = m.runKill(m.killTarget)
 		}
+		m.killTarget = ""
 		m.mode = ModeGrid
 		return m, cmd
 
 	case "n", "N", "esc":
+		m.killTarget = ""
 		m.mode = ModeGrid
 	}
 
@@ -1025,12 +1041,12 @@ func (m Model) viewNewSession() string {
 }
 
 func (m Model) viewConfirmKill() string {
-	if m.selected >= len(m.sessions) {
+	if m.killTarget == "" {
 		m.mode = ModeGrid
 		return m.viewGrid()
 	}
 
-	name := m.sessions[m.selected].Name
+	name := m.killTarget
 	title := headerStyle.Width(m.width).Render(" pixel-fleet   Confirm Kill")
 
 	msg := promptStyle.Render(
