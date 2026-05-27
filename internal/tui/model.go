@@ -173,6 +173,11 @@ type discoveryResultMsg struct {
 // show up in the dashboard without waiting for the next 2 s tick.
 type restoredMsg int
 
+// killedMsg signals that a kill finished (the name is the session that was
+// targeted). Kill runs on a goroutine — see runKill — so this is how the
+// completed kill gets back onto the UI thread to trigger a refresh.
+type killedMsg string
+
 // FocusSession is set when the user wants to attach to a session.
 var FocusSession string
 
@@ -370,6 +375,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshSessions
 		}
 		return m, nil
+
+	case killedMsg:
+		// The session is gone (or the kill failed and was logged); refresh
+		// every view so it drops out of the grid/archive without waiting for
+		// the next tick.
+		return m, tea.Batch(m.refreshSessions, m.refreshArchived, m.refreshLocalWindows)
 
 	case errMsg:
 		m.err = msg
@@ -719,11 +730,15 @@ func (m Model) tryCreateSession() (Model, tea.Cmd) {
 func (m Model) handleConfirmKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
+		var cmd tea.Cmd
 		if m.selected < len(m.sessions) {
-			_ = m.manager.Kill(m.sessions[m.selected].Name)
+			// Kill off the event loop: it does a remote tmux kill over SSH,
+			// which can take a few seconds against an unreachable host. Run
+			// inline and the whole dashboard freezes until it returns.
+			cmd = m.runKill(m.sessions[m.selected].Name)
 		}
 		m.mode = ModeGrid
-		return m, m.refreshSessions
+		return m, cmd
 
 	case "n", "N", "esc":
 		m.mode = ModeGrid
@@ -1346,6 +1361,22 @@ func (m Model) runAutoRestore(tasks []restoreTask) tea.Cmd {
 			spawned++
 		}
 		return restoredMsg(spawned)
+	}
+}
+
+// runKill removes a session on a goroutine via tea.Cmd. Kill performs a
+// remote tmux kill over SSH (bounded by ConnectTimeout in runRemoteTmux);
+// running it inline in Update would block the entire event loop until the
+// SSH returns — for an unreachable host that meant a multi-second-to-minutes
+// frozen dashboard. The error is logged inside Kill's callees; we only need
+// the completion signal to trigger a refresh.
+func (m Model) runKill(name string) tea.Cmd {
+	mgr := m.manager
+	return func() tea.Msg {
+		if err := mgr.Kill(name); err != nil {
+			log.Printf("kill %s: %v", name, err)
+		}
+		return killedMsg(name)
 	}
 }
 

@@ -404,8 +404,15 @@ func (m *Manager) killRemoteForRecord(rec SessionRecord) error {
 }
 
 // runRemoteTmux executes a tmux command on the given remote machine via SSH.
+//
+// ConnectTimeout bounds the TCP connect so an unreachable host fails in a
+// few seconds instead of hanging on the kernel's ~2-minute SYN timeout —
+// matching the discovery/doctor probes. Without it, killing a session whose
+// host is down blocked the caller (and, in the TUI, the whole event loop)
+// for minutes. BatchMode keeps a missing key/host from prompting forever.
 func (m *Manager) runRemoteTmux(machine, remoteCmd string) error {
 	cmd := exec.Command("ssh",
+		"-o", "ConnectTimeout=5",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
 		"-o", "BatchMode=yes",
