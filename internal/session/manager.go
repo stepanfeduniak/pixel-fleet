@@ -486,7 +486,7 @@ func (m *Manager) CaptureAll(sessions []Session, height int) []Session {
 			continue
 		}
 		sessions[i].LastOutput = output
-		sessions[i].Status = DetectStatus(output)
+		sessions[i].Status = DetectStatus(output, sessions[i].Agent)
 	}
 	return sessions
 }

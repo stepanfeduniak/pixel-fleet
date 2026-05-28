@@ -410,73 +410,159 @@ func ExpandHome(path string) string {
 	return path
 }
 
-// DetectStatus analyzes captured pane output to determine session status.
-// Detection is based on actual Claude Code terminal output patterns observed
-// from live tmux captures, not generic keyword matching.
-func DetectStatus(output string) Status {
+// DetectStatus analyzes a captured pane to determine the session's status.
+//
+// Detection is per-agent: Claude Code, Codex, and a plain shell ("terminal")
+// each have their own TUI vocabulary, and the previous detector was Claude-only
+// — Codex sessions ended up mis-classified, and Claude itself had "esc to
+// interrupt" tagged as a waiting-for-input signal when it's actually shown
+// while Claude is actively generating. The patterns below are grounded in real
+// pane snapshots; the test file lists the fixtures they were derived from.
+//
+// `agent` matches SessionRecord.Agent ("claude", "codex", "terminal", or "").
+// Empty falls back to Claude for legacy records.
+func DetectStatus(output, agent string) Status {
 	if output == "" {
 		return StatusUnknown
 	}
 
-	lines := strings.Split(output, "\n")
-
-	// Collect last 15 non-empty lines (bottom of the pane is most informative)
-	var lastLines []string
-	for i := len(lines) - 1; i >= 0 && len(lastLines) < 15; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+	// Last 15 non-empty lines (the bottom of the pane carries the verdict).
+	allLines := strings.Split(output, "\n")
+	var lines []string
+	for i := len(allLines) - 1; i >= 0 && len(lines) < 15; i-- {
+		trimmed := strings.TrimSpace(allLines[i])
 		if trimmed != "" {
-			lastLines = append(lastLines, trimmed)
+			lines = append(lines, trimmed)
 		}
 	}
+	joined := strings.Join(lines, "\n")
 
-	joined := strings.Join(lastLines, "\n")
+	// SSH-level errors look the same regardless of agent — handle once up top.
+	if hasSSHError(lines) {
+		return StatusError
+	}
 
-	// 1. SSH-level errors — the session itself is broken (not Claude discussing errors)
-	for _, line := range lastLines {
+	switch agent {
+	case "codex":
+		return detectCodex(joined, lines)
+	case "terminal":
+		// Plain shell sessions: there is no LLM concept of "working" or
+		// "waiting for input" to detect. The previous detector accidentally
+		// matched on log/output keywords and produced misleading icons.
+		return StatusIdle
+	default:
+		// "" (legacy, pre-multi-agent) and "claude" both use Claude detection.
+		return detectClaude(joined, lines)
+	}
+}
+
+func hasSSHError(lines []string) bool {
+	for _, line := range lines {
 		lower := strings.ToLower(line)
 		if strings.Contains(lower, "connection refused") ||
 			strings.Contains(lower, "connection closed") ||
 			strings.Contains(lower, "connection timed out") ||
 			strings.Contains(lower, "no route to host") ||
 			strings.Contains(lower, "host key verification failed") {
-			return StatusError
+			return true
 		}
 	}
+	return false
+}
 
-	// 2. Permission prompt — Claude needs tool approval
+// detectClaude classifies a Claude Code pane.
+//
+// Grounded in live captures of v2.1.x:
+//   - Working: footer shows "esc to interrupt"; activity line of the form
+//     "✢ Pouncing… (Xs · ↓ Nk tokens)" (verb + "…" + tokens); or a braille
+//     spinner frame from the agent's own animation.
+//   - Waiting input: a "❯" prompt at the start of an input-area line, or
+//     a footer hint like "? for shortcuts" / "← for agents" / "shift+tab to
+//     cycle" — but ONLY when "esc to interrupt" is absent (the cycle hint
+//     is shown in both states; the interrupt hint is the discriminator).
+//   - Permission gate: the explicit approval modal, also reported as Waiting.
+//   - Finished-thinking summaries like "✻ Sautéed for 6m 11s" do NOT signal
+//     working — they're post-completion markers shown next to the input box.
+func detectClaude(joined string, lines []string) Status {
+	// Permission gate first — the modal eclipses everything else.
 	if strings.Contains(joined, "Do you want to proceed?") ||
 		strings.Contains(joined, "Do you want to continue?") ||
 		strings.Contains(joined, "Esc to cancel") {
 		return StatusWaitingInput
 	}
 
-	// 3. Working — Claude is actively processing
-	if containsAny(joined, brailleSpinners) ||
-		strings.Contains(joined, "Running…") ||
-		strings.Contains(joined, "◐") ||
-		hasActivityStatus(lastLines) {
+	// Working signals.
+	if strings.Contains(joined, "esc to interrupt") ||
+		containsAny(joined, brailleSpinners) ||
+		hasClaudeActivityLine(lines) {
 		return StatusWorking
 	}
 
-	// 4. User input prompt — Claude is done, waiting for user
-	if strings.Contains(joined, "shift+tab to cycle") ||
-		strings.Contains(joined, "esc to interrupt") {
-		return StatusWaitingInput
-	}
-	for _, line := range lastLines {
+	// Waiting signals — order matters because some hints (shift+tab to cycle)
+	// are ambiguous on their own but unambiguous once "esc to interrupt" is
+	// ruled out above.
+	for _, line := range lines {
 		if line == "❯" || strings.HasPrefix(line, "❯ ") {
 			return StatusWaitingInput
 		}
 	}
+	if strings.Contains(joined, "? for shortcuts") ||
+		strings.Contains(joined, "← for agents") ||
+		strings.Contains(joined, "shift+tab to cycle") {
+		return StatusWaitingInput
+	}
 
-	// 5. Fallback
+	return StatusIdle
+}
+
+// detectCodex classifies an OpenAI Codex CLI pane.
+//
+// Grounded in live captures of the gpt-5.5-era TUI:
+//   - Waiting input: an input line beginning with "› " (U+203A), typically
+//     followed by a status footer like "gpt-X default ... · <cwd>". The
+//     separator "─ Worked for Xm Ys ─" above it marks the previous turn's
+//     completion summary but is not itself a status signal.
+//   - Working: present-tense progress verb with an ellipsis ("Thinking…",
+//     "Working…", "Generating…", "Reasoning…"), or an explicit "esc to
+//     interrupt" prompt in the Codex chrome.
+//   - Permission gate: tool approval prompts like "Allow?", "Approve?",
+//     "Apply this patch?" — reported as Waiting.
+//
+// Conservative on Working: a single ellipsis in tool output (e.g. "connecting…")
+// shouldn't flip the status, so we require a known verb prefix.
+func detectCodex(joined string, lines []string) Status {
+	if strings.Contains(joined, "Apply this patch?") ||
+		strings.Contains(joined, "Approve?") ||
+		strings.Contains(joined, "Allow?") {
+		return StatusWaitingInput
+	}
+
+	if strings.Contains(joined, "esc to interrupt") ||
+		containsAny(joined, codexWorkingVerbs) {
+		return StatusWorking
+	}
+
+	for _, line := range lines {
+		if line == "›" || strings.HasPrefix(line, "› ") {
+			return StatusWaitingInput
+		}
+	}
+
 	return StatusIdle
 }
 
 // brailleSpinners are the Unicode Braille characters used by Claude Code's spinner.
 var brailleSpinners = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// containsAny checks if s contains any of the substrings.
+// codexWorkingVerbs are the progress verbs the Codex CLI shows mid-turn.
+// Each ends in "…" so the match doesn't fire on completed-step lines like
+// "• Implemented locally." that have no ellipsis.
+var codexWorkingVerbs = []string{
+	"Thinking…", "Working…", "Generating…", "Reasoning…",
+	"Drafting…", "Reviewing…", "Editing…", "Planning…",
+}
+
+// containsAny reports whether s contains any of the substrings.
 func containsAny(s string, subs []string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
@@ -486,12 +572,16 @@ func containsAny(s string, subs []string) bool {
 	return false
 }
 
-// hasActivityStatus detects Claude Code's working status line, e.g.:
+// hasClaudeActivityLine detects Claude Code's mid-generation status line:
 //
 //	"· Pouncing… (3m 29s · ↓ 6.3k tokens · thought for 8s)"
 //	"✢ Pouncing… (3m 41s · ↓ 6.4k tokens)"
-//	"◐ Computing… (1m 6s · ↓ 1.6k tokens)"
-func hasActivityStatus(lines []string) bool {
+//	"* Drizzling… (19s · ↓ 778 tokens)"
+//
+// The "…" + tokens combo only appears while the model is actively streaming;
+// post-completion summaries ("✻ Sautéed for 6m 11s") have neither, so they
+// don't false-positive.
+func hasClaudeActivityLine(lines []string) bool {
 	for _, line := range lines {
 		if strings.Contains(line, "…") &&
 			(strings.Contains(line, "· ↓") || strings.Contains(line, "tokens")) {
