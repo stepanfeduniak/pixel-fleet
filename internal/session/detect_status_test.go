@@ -97,6 +97,24 @@ const codexWorkingThinkingPane = `
 Thinking…
 `
 
+// Codex's radio-button tool-approval modal — verbatim from the live
+// `Source policy fix` pane on 2026-05-28. The actual question
+// ("Would you like to run the following command?") sits 7+ lines above the
+// modal's footer, past the idle-vs-waiting lookback. The "Press enter to
+// confirm" footer is the unambiguous marker.
+const codexPermissionRadioPane = `
+• Ran rmdir node_modules/.tmp node_modules
+  └ rmdir: failed to remove 'node_modules': Directory not empty
+◦ Running rm node_modules/node_modules
+  Would you like to run the following command?
+  Reason: Allow removing the temporary node_modules symlink I created in the frontend worktree before relinking it correctly for verification.
+  $ rm node_modules/node_modules
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with ` + "`rm node_modules/node_modules`" + ` (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel
+`
+
 // Codex mid-turn, alternative chrome: the "• Working (Xs • esc to interrupt)"
 // status line that the gpt-5.5-era TUI shows during streaming. Seen on the
 // live `Source policy fix` pane on 2026-05-28.
@@ -149,6 +167,7 @@ func TestDetectStatus(t *testing.T) {
 		{"codex_waiting_after_question", codexWaitingAfterQuestionPane, "codex", StatusWaitingInput},
 		{"codex_working_thinking", codexWorkingThinkingPane, "codex", StatusWorking},
 		{"codex_working_esc_to_interrupt", codexWorkingEscToInterruptPane, "codex", StatusWorking},
+		{"codex_permission_radio_modal", codexPermissionRadioPane, "codex", StatusWaitingInput},
 
 		// Terminal
 		{"terminal_always_idle_even_with_error_text", terminalPane, "terminal", StatusIdle},
