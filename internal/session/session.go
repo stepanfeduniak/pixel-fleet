@@ -522,7 +522,14 @@ func detectClaude(joined string, lines []string) Status {
 // Conservative on Working: a single ellipsis in tool output (e.g. "connecting…")
 // shouldn't flip the status, so we require a known verb prefix.
 func detectCodex(joined string, lines []string) Status {
-	if strings.Contains(joined, "Apply this patch?") ||
+	// Permission gates. "Press enter to confirm" is the unambiguous marker
+	// for Codex's radio-button approval modal (Would-you-like-to-run, file
+	// edit approval, etc.) — the actual "?" question can be many lines back
+	// (above the reason, the command, and the three numbered options), past
+	// the bottom-up lookback used for the idle-vs-waiting heuristic, so we
+	// match the modal's footer directly.
+	if strings.Contains(joined, "Press enter to confirm") ||
+		strings.Contains(joined, "Apply this patch?") ||
 		strings.Contains(joined, "Approve?") ||
 		strings.Contains(joined, "Allow?") {
 		return StatusWaitingInput
