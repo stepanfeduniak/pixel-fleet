@@ -77,7 +77,7 @@ const codexIdleAfterStatementPane = `
   Changes are local and not pushed.
 ─ Worked for 3m 15s ─────────────────────────────────────────────────
 › Summarize recent commits
-  gpt-5.5 default fast · ~/research_interface_inloop/working_repositories/noyes-orchestrator
+  gpt-5.5 default fast · ~/projects/orchestrator
 `
 
 // Codex finished a turn by asking the user a question. The "?" on the last
@@ -135,7 +135,7 @@ const codexWorkingEscToInterruptPane = `
 // would land on unpredictable Claude heuristics.
 const terminalPane = `
 ConnectionError: Failed to open OpenCVCamera(/dev/v4l/by-path/...).
-inloop@inloop-EQ:~/in-loop/real_robot_gym$
+user@workstation:~/projects/robot_gym$
 `
 
 // SSH-level error — independent of agent.
