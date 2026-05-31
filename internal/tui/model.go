@@ -1298,7 +1298,7 @@ func (m Model) searchRepos() tea.Msg {
 	}
 
 	// Remote search
-	remotePath := m.manager.Config().RemoteBase
+	remotePath := m.manager.Config().RemoteBaseFor(machine)
 	repos := session.FindRemoteRepos(machine, remotePath, query)
 	return repoSearchMsg(repos)
 }

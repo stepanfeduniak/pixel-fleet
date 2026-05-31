@@ -8,6 +8,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MachineConfig configures per-machine overrides keyed by SSH host alias
+// (matching the Host entries in ~/.ssh/config). Currently only RemoteBase,
+// but kept as a struct so future per-machine knobs can be added without
+// breaking existing config files.
+//
+// Example:
+//
+//	machines:
+//	  RTX6000:
+//	    remote_base: /workspace/myorg
+type MachineConfig struct {
+	RemoteBase string `yaml:"remote_base"`
+}
+
 // AppBins configures per-app overrides. Used by the generic `apps:` map
 // for apps that don't have a hardcoded well-known config field (Claude /
 // Codex still keep theirs for backward-compat). Despite the historical
@@ -44,7 +58,12 @@ type Config struct {
 	//       local_bin: aider
 	//       remote_bin: /opt/aider/bin/aider
 	Apps              map[string]AppBins `yaml:"apps"`
-	SessionName       string             `yaml:"session_name"`
+	// Machines is a per-machine override map keyed by SSH host alias.
+	// Lets a single host (e.g. a RunPod box with repos on a network
+	// volume) point at a different remote_base without changing the
+	// global default.
+	Machines          map[string]MachineConfig `yaml:"machines"`
+	SessionName       string                   `yaml:"session_name"`
 	ScanTimeout       time.Duration      `yaml:"scan_timeout"`
 	// DiscoveryInterval controls how often the dashboard re-scans known
 	// machines in the background for orphaned cs sessions (alive on a
@@ -137,6 +156,17 @@ func (c *Config) IsRemoteControlEnabled() bool {
 		return true
 	}
 	return *c.RemoteControl
+}
+
+// RemoteBaseFor returns the remote search/resolution base path for a given
+// machine. A non-empty per-machine override (Machines[name].RemoteBase)
+// wins; otherwise the global RemoteBase is returned. Callers pass the SSH
+// host alias as it appears in ~/.ssh/config.
+func (c *Config) RemoteBaseFor(machine string) string {
+	if mc, ok := c.Machines[machine]; ok && mc.RemoteBase != "" {
+		return mc.RemoteBase
+	}
+	return c.RemoteBase
 }
 
 // RequiresPathFor returns the effective RequiresPath value for an app:
