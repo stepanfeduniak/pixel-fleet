@@ -691,7 +691,7 @@ func (m *Manager) resolvePath(machine, path string) string {
 	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "~") {
 		return path
 	}
-	base := m.cfg.RemoteBase
+	base := m.cfg.RemoteBaseFor(machine)
 	if base == "~" {
 		return "~/" + path
 	}
