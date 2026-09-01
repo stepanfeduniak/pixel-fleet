@@ -158,3 +158,18 @@ func agentBadge(agent string) string {
 	}
 	return appBadgeStyle(app.Colors()).Render(app.Label())
 }
+
+// Coding blocker banner — dark text on the warning yellow, so it reads as
+// a held state rather than an error, and can't be mistaken for chrome.
+var (
+	blockerBannerStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#111827")).
+				Background(warningColor).
+				Bold(true).
+				Padding(0, 1)
+
+	blockerDoneStyle = lipgloss.NewStyle().
+				Foreground(successColor).
+				Bold(true).
+				Padding(0, 1)
+)

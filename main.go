@@ -502,7 +502,14 @@ Dashboard keys:
   arrow/hjkl  Navigate       enter  Focus into session
   n           New session    x      Kill session
   s           Scan machines  r      Refresh
-  q           Detach         ?      Help
+  b           Coding blocker q      Detach
+  ?           Help
+
+Coding blocker:
+  Press b in the dashboard and pick a duration. For that long the
+  gallery stays on screen but you cannot go into a session. Sessions
+  keep running the whole time — the blocker only stops you watching.
+  It survives a restart. Press b again and type 'break' to end early.
 
 Return to dashboard:
   F1          Always works

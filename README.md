@@ -21,6 +21,15 @@ cs help       # all commands and keybindings
 cs doctor     # preflight all known machines
 ```
 
+## Coding blocker
+
+Watching agents work is not working. Press `b` in the dashboard, pick a
+duration, and for that long you can see the fleet but can't go into a
+session. Sessions keep running; only you are locked out. It survives a
+restart, and takes a typed `break` to end early.
+
+**[docs/blocker.md](docs/blocker.md)**
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

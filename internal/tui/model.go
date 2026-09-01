@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
+	"github.com/stepanfeduniak/pixel-fleet/internal/blocker"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
 )
@@ -26,6 +27,8 @@ const (
 	ModeScan
 	ModeScanAdopt
 	ModeArchive
+	ModeBlockerPick
+	ModeBlockerBreak
 )
 
 // New-session form field indices. Order on screen matches the constant
@@ -71,8 +74,8 @@ type Model struct {
 	// or `N` (system / utility apps). Splitting the list keeps the
 	// agent picker focused: most invocations are claude/codex/term, and
 	// the rarer viewer apps live behind shift+n.
-	selectedAgent   int
-	newSessionApps  []apps.App
+	selectedAgent  int
+	newSessionApps []apps.App
 
 	// Machine selection
 	machines        []session.Machine
@@ -83,10 +86,10 @@ type Model struct {
 	selectedSugg    int
 
 	// Scan results
-	discovered     []session.DiscoveredSession
-	selectedDisc   int
-	scanning       bool
-	adoptInput     textinput.Model
+	discovered   []session.DiscoveredSession
+	selectedDisc int
+	scanning     bool
+	adoptInput   textinput.Model
 
 	// Refresh ticker
 	refreshInterval time.Duration
@@ -120,6 +123,22 @@ type Model struct {
 	// the archive view (`A` from grid).
 	archived         []session.Session
 	selectedArchived int
+
+	// Coding blocker. Deliberately NOT a Mode: a blocker leaves the
+	// gallery on screen and navigable and only refuses the paths that
+	// drop you inside a session, so it has to coexist with whatever mode
+	// the user is in rather than replace the view. The two Mode values
+	// above are just its dialogs (pick a duration, break early).
+	//
+	// blocker is a mirror of the on-disk state, reloaded at startup so a
+	// crashed or ctrl+c'd dashboard comes back still blocked.
+	blocker        blocker.State
+	blockerPick    int             // index into blockerPresets; == len means "custom"
+	blockerCustom  textinput.Model // custom duration entry
+	blockerBreak   textinput.Model // typed confirmation to end early
+	blockerNotice  time.Time       // when the user last bumped into the blocker
+	blockerTicking bool            // a 1s countdown tick is in flight
+	blockerDone    bool            // one-shot "blocker finished" flash
 }
 
 // restoreTask describes a tracked-alive remote session that needs a
@@ -206,7 +225,23 @@ func NewModel(mgr *session.Manager, tmuxSessionName string, refreshInterval, dis
 	ai.CharLimit = 64
 	ai.Width = 50
 
+	bc := textinput.New()
+	bc.Placeholder = "e.g. 20m, 90m, 1h30m"
+	bc.CharLimit = 12
+	bc.Width = 20
+
+	bb := textinput.New()
+	// No placeholder: a dimmed "break" sitting in the field is hard to tell
+	// from a typed one, and the prompt above it already says the word.
+	bb.CharLimit = 16
+	bb.Width = 20
+
 	machines := session.ListMachines()
+
+	// Reload any blocker left over from a previous dashboard process. This
+	// is what makes ctrl+c useless as an escape: remain-on-exit respawns
+	// the pane, and the deadline is still sitting on disk.
+	blk := blocker.Load()
 
 	return Model{
 		manager:           mgr,
@@ -217,6 +252,10 @@ func NewModel(mgr *session.Manager, tmuxSessionName string, refreshInterval, dis
 		pathInput:         pi,
 		adoptInput:        ai,
 		machines:          machines,
+		blockerCustom:     bc,
+		blockerBreak:      bb,
+		blocker:           blk,
+		blockerTicking:    blk.Active(time.Now()),
 	}
 }
 
@@ -226,6 +265,9 @@ func (m Model) Init() tea.Cmd {
 		m.refreshArchived,
 		m.refreshLocalWindows,
 		m.tickCmd(),
+	}
+	if m.blocker.Active(time.Now()) {
+		cmds = append(cmds, m.blockerTickCmd())
 	}
 	if m.discoveryInterval > 0 {
 		// Kick off an immediate background scan so the orphan badge
@@ -390,6 +432,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the next tick.
 		return m, tea.Batch(m.refreshSessions, m.refreshArchived, m.refreshLocalWindows)
 
+	case blockerTickMsg:
+		return m.handleBlockerTick(time.Time(msg))
+
+	case blockerBellMsg:
+		return m, nil
+
 	case errMsg:
 		m.err = msg
 		return m, nil
@@ -400,6 +448,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m.mode == ModeNewSession || m.mode == ModeScanAdopt {
 		return m.updateInputs(msg)
+	}
+	if m.mode == ModeBlockerPick || m.mode == ModeBlockerBreak {
+		return m.updateBlockerInputs(msg)
 	}
 
 	return m, nil
@@ -429,6 +480,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleScanAdoptKey(msg)
 	case ModeArchive:
 		return m.handleArchiveKey(msg)
+	case ModeBlockerPick:
+		return m.handleBlockerPickKey(msg)
+	case ModeBlockerBreak:
+		return m.handleBlockerBreakKey(msg)
 	}
 
 	return m, nil
@@ -436,6 +491,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cols, _ := gridLayout(len(m.sessions), m.width, m.height)
+
+	// Any keypress dismisses the "blocker finished" flash.
+	m.blockerDone = false
 
 	switch {
 	case msg.String() == "q":
@@ -466,6 +524,13 @@ func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case msg.String() == "enter":
+		// The blocker's one job. Bail before building the select-window
+		// command rather than discarding it afterwards, so there is no
+		// path where a blocked focus still reaches tmux.
+		if m.blocker.Active(time.Now()) {
+			m.blockerNotice = time.Now()
+			return m, nil
+		}
 		if len(m.sessions) > 0 && m.selected < len(m.sessions) {
 			name := m.sessions[m.selected].Name
 			sessionName := m.tmuxSessionName
@@ -529,6 +594,21 @@ func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeArchive
 		m.selectedArchived = 0
 		return m, m.refreshArchived
+
+	case msg.String() == "b" || msg.String() == "B":
+		// Same key starts a blocker and breaks one — while blocked, the
+		// only thing `b` could sensibly mean is "let me out".
+		if m.blocker.Active(time.Now()) {
+			m.mode = ModeBlockerBreak
+			m.blockerBreak.Reset()
+			m.blockerBreak.Focus()
+			return m, textinput.Blink
+		}
+		m.mode = ModeBlockerPick
+		m.blockerPick = 0
+		m.blockerCustom.Reset()
+		m.blockerCustom.Blur()
+		return m, nil
 	}
 
 	return m, nil
@@ -788,7 +868,13 @@ func (m Model) handleScanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.discovered) > 0 && m.selectedDisc < len(m.discovered) {
 			d := m.discovered[m.selectedDisc]
 			if d.Tracked {
-				// Already tracked — switch to that session's local window
+				// Already tracked — switch to that session's local window.
+				// The scan view is the other door into a session, so the
+				// blocker has to hold it shut too.
+				if m.blocker.Active(time.Now()) {
+					m.blockerNotice = time.Now()
+					return m, nil
+				}
 				if d.DisplayName != "" {
 					sessionName := m.tmuxSessionName
 					name := d.DisplayName
@@ -867,11 +953,18 @@ func (m Model) View() string {
 		return m.viewScan()
 	case ModeArchive:
 		return m.viewArchive()
+	case ModeBlockerPick:
+		return m.viewBlockerPick()
+	case ModeBlockerBreak:
+		return m.viewBlockerBreak()
 	}
 	return ""
 }
 
 func (m Model) viewGrid() string {
+	now := time.Now()
+	blocked := m.blocker.Active(now)
+
 	sessionCount := fmt.Sprintf("%d sessions", len(m.sessions))
 	header := fmt.Sprintf(" pixel-fleet   %s", sessionCount)
 	if m.orphanedCount > 0 {
@@ -882,19 +975,42 @@ func (m Model) viewGrid() string {
 	}
 	title := headerStyle.Width(m.width).Render(header)
 
-	gridHeight := m.height - 3
+	// The banner stacks above the grid rather than replacing it: during a
+	// blocker the gallery stays on screen and navigable, only the way in
+	// is shut. It costs one line, so the grid gets one line shorter.
+	banner := ""
+	chrome := 3 // title + footer + the grid's own trailing line
+	switch {
+	case blocked:
+		banner = m.viewBlockerBanner(now)
+		chrome++
+	case m.blockerDone:
+		banner = blockerDoneStyle.Width(m.width).Render(
+			" ✓  blocker finished — the fleet is yours again")
+		chrome++
+	}
+
+	gridHeight := m.height - chrome
 	grid := renderGrid(m.sessions, m.selected, m.width, gridHeight)
 
+	focusHint := "focus"
+	blockHint := footerKeyStyle.Render("[b]") + " block"
+	if blocked {
+		focusHint = dimStyle().Render("blocked")
+		blockHint = footerKeyStyle.Render("[b]") + " break"
+	}
 	footer := footerStyle.Width(m.width).Render(
-		fmt.Sprintf(" %s new  %s system  %s focus  %s kill  %s archive  %s archive view  %s fetch all  %s refresh  %s detach",
+		fmt.Sprintf(" %s new  %s system  %s %s  %s kill  %s archive  %s archive view  %s fetch all  %s refresh  %s  %s detach",
 			footerKeyStyle.Render("[n]"),
 			footerKeyStyle.Render("[N]"),
 			footerKeyStyle.Render("[enter]"),
+			focusHint,
 			footerKeyStyle.Render("[x]"),
 			footerKeyStyle.Render("[a]"),
 			footerKeyStyle.Render("[A]"),
 			footerKeyStyle.Render("[s]"),
 			footerKeyStyle.Render("[r]"),
+			blockHint,
 			footerKeyStyle.Render("[q]"),
 		),
 	)
@@ -907,7 +1023,11 @@ func (m Model) viewGrid() string {
 		m.err = nil
 	}
 
-	parts := []string{title, grid, footer}
+	parts := []string{title}
+	if banner != "" {
+		parts = append(parts, banner)
+	}
+	parts = append(parts, grid, footer)
 	if errLine != "" {
 		parts = append(parts, errLine)
 	}
@@ -1071,6 +1191,7 @@ func (m Model) viewHelp() string {
 		"  x               Kill selected session",
 		"  a               Archive selected (hide; nothing stops)",
 		"  A               Open archive view",
+		"  b               Start a coding blocker (or break one)",
 		"  s               Scan for orphaned sessions",
 		"  r               Refresh sessions",
 		"  q               Detach (everything keeps running)",
@@ -1092,6 +1213,14 @@ func (m Model) viewHelp() string {
 		"  cs kill <name>                    Kill a session",
 		"  cs kill-all                       Kill all sessions",
 		"",
+		lipgloss.NewStyle().Bold(true).Render("Coding blocker"),
+		"",
+		"  Press b, pick a duration. The gallery stays; going",
+		"  into a session does not. Sessions keep running the",
+		"  whole time — the blocker only stops you watching.",
+		"  It survives a restart. Press b again and type",
+		"  'break' to end it early.",
+		"",
 		dimStyle().Render("Press any key to close"),
 	))
 
@@ -1106,7 +1235,7 @@ func (m Model) viewArchive() string {
 
 	var body string
 	if len(m.archived) == 0 {
-		body = emptyStyle.Width(m.width).Height(m.height-3).Render(
+		body = emptyStyle.Width(m.width).Height(m.height - 3).Render(
 			"\n\n  Nothing archived.\n\n  Press [esc] to go back.\n  In the grid, press [a] to archive a session.",
 		)
 	} else {
