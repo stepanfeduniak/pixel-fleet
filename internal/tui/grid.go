@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 )
@@ -110,8 +111,8 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 			if s.Machine != "" {
 				machineRaw = " @" + s.Machine
 			}
-			prefixVis := len(name) + len(machineRaw)
-			suffixVis := len(stripAnsi(suffix))
+			prefixVis := cellWidthOf(name) + cellWidthOf(machineRaw)
+			suffixVis := cellWidthOf(suffix)
 			// cellWidth is the bordered cell's outer width; the content area
 			// is cellWidth - 2 (one for each border edge). Round-trip with
 			// the inter-segment "  " spacing.
@@ -126,16 +127,12 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 				// narrow that there's no useful room for the name with the
 				// machine still attached, drop the machine and let the name
 				// have the whole prefix budget.
-				spaceForName := availForPrefix - len(machineRaw)
+				spaceForName := availForPrefix - cellWidthOf(machineRaw)
 				if spaceForName >= 6 {
-					if spaceForName-1 < len(name) {
-						name = name[:spaceForName-1] + "…"
-					}
+					name = truncateCells(name, spaceForName)
 					styledPrefix = titleStyle.Render(name) + dimStyle().Render(machineRaw)
 				} else {
-					if availForPrefix-1 < len(name) {
-						name = name[:availForPrefix-1] + "…"
-					}
+					name = truncateCells(name, availForPrefix)
 					styledPrefix = titleStyle.Render(name)
 				}
 			} else {
@@ -175,6 +172,28 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 		lipgloss.JoinVertical(lipgloss.Left, rowStrings...))
 }
 
+// cellWidthOf returns how many terminal columns a string occupies, ignoring
+// any ANSI escapes and counting a wide rune (CJK, most emoji) as the two
+// columns it actually takes.
+func cellWidthOf(s string) int { return ansi.StringWidth(s) }
+
+// truncateCells cuts a string to at most width terminal columns, appending an
+// ellipsis when it had to cut.
+//
+// This must never slice the string by byte offset. Pane captures are full of
+// multi-byte runes — every box-drawing character an agent's UI draws its
+// separators and frames from is three bytes — and cutting one in half emits a
+// partial sequence that the terminal renders as a replacement character. The
+// old code did exactly that, so a truncated separator line came out as
+// "─────�". Byte length also under-counts the available room by a factor of
+// three for such a line, truncating it far earlier than the cell required.
+func truncateCells(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return ansi.Truncate(s, width, "…")
+}
+
 // truncateContent trims captured pane output to fit within the cell.
 func truncateContent(content string, width, height int) string {
 	if content == "" {
@@ -191,33 +210,8 @@ func truncateContent(content string, width, height int) string {
 	// Truncate each line to width
 	var result []string
 	for _, line := range lines {
-		// Strip ANSI escape codes for width calculation
-		clean := stripAnsi(line)
-		if len(clean) > width {
-			line = clean[:width-1] + "…"
-		}
-		result = append(result, line)
+		result = append(result, truncateCells(line, width))
 	}
 
 	return strings.Join(result, "\n")
-}
-
-// stripAnsi removes ANSI escape sequences from a string.
-func stripAnsi(s string) string {
-	var result strings.Builder
-	inEscape := false
-	for _, r := range s {
-		if r == '\033' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		result.WriteRune(r)
-	}
-	return result.String()
 }
