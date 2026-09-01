@@ -14,18 +14,18 @@ func init() {
 
 type app struct{}
 
-func (app) Name() string             { return "terminal" }
-func (app) Aliases() []string        { return []string{"term", "shell", "bash"} }
-func (app) Label() string            { return "TERM" }
+func (app) Name() string      { return "terminal" }
+func (app) Aliases() []string { return []string{"term", "shell", "bash"} }
+func (app) Label() string     { return "TERM" }
+
 // Terminal has no binary of its own — it execs the user's $SHELL. NeedsBin
 // is false so the remote launch skips the not-found guard and the
 // PATH/nvm prepend.
-func (app) DefaultLocalBin() string     { return "" }
-func (app) DefaultRemoteBin() string    { return "" }
-func (app) NeedsBin() bool              { return false }
-func (app) SupportsRemoteControl() bool { return false }
-func (app) RequiresPath() bool          { return true }
-func (app) IsSystem() bool              { return false }
+func (app) DefaultLocalBin() string  { return "" }
+func (app) DefaultRemoteBin() string { return "" }
+func (app) NeedsBin() bool           { return false }
+func (app) RequiresPath() bool       { return true }
+func (app) IsSystem() bool           { return false }
 
 // Green completes the stoplight: claude blue, codex red, terminal green.
 func (app) Colors() apps.Colors {
@@ -44,6 +44,11 @@ func (app) Colors() apps.Colors {
 func (app) LaunchExec(ctx apps.LaunchCtx) string {
 	return `${SHELL:-/bin/bash} -l`
 }
+
+// MatchesPane returns 0. Terminal is the fallback, not something to detect:
+// a session is a shell until one of the agents is recognised in it, and a
+// shell has no chrome of its own to match on.
+func (app) MatchesPane(content string) int { return 0 }
 
 // ProcessMatches deliberately returns false. A bare login shell is too
 // generic to mark as an "orphaned terminal session" by command name alone

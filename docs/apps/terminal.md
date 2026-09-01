@@ -1,36 +1,31 @@
-# Terminal (`cs term`)
+# The session itself
 
-> **You are Claude. Nothing to install for this app — but read this so
-> you can answer the user's questions about it.**
+> **You are Claude. Nothing to install — but read this so you can answer
+> the user's questions about it.**
 
 ## What it is
 
-A plain login shell session managed by pixel-fleet. No agent. The user
-gets a persistent `$SHELL` on the target machine, with all the cs
-benefits (survives SSH drops, listed in the dashboard, etc.).
+Every cs session is a login shell on the target machine. There is no app
+to choose: `cs <name> <machine> <path>` gives the user their `$SHELL` in
+that directory, with all the cs benefits — it survives SSH drops, shows
+in the dashboard, and copies to the system clipboard.
 
-Aliases: `term`, `shell`, `bash` — all four work as
-`cs <alias> <name> <machine> <path>`.
+Whatever they start in that shell — Claude Code, Codex, a training run,
+nothing at all — is recognised from what it draws, and the dashboard
+badges and colours the cell to match. See
+[../detection.md](../detection.md).
 
 ## Install
 
-Nothing. `cs term` execs the user's `$SHELL` on the target machine. If
-the user has a shell, they have this app.
+Nothing. If the user has a shell, they have this.
 
 ## Verify
 
 ```bash
-cs term test-shell home ~
+cs test-shell home ~
 ```
 
 Should drop the user into a shell on the local machine inside a cs tmux
-session. Press `F1` (or `Ctrl+q`, or `Ctrl+b q`) to return to the
-dashboard.
-
-## When to recommend it
-
-- The user wants a persistent shell on a remote box for long-running
-  commands (training jobs, builds, downloads).
-- The user wants to use a tool that isn't a registered cs app.
-- The user wants to debug a remote machine without leaving the
-  dashboard.
+session, badged `TERM`. Type `claude` and within a refresh or two the
+badge becomes `CLAUDE`. Press `F1` (or `Ctrl+q`, or `Ctrl+b q`) to
+return to the dashboard.

@@ -27,14 +27,14 @@ func (app) Aliases() []string        { return []string{"skills", "skill"} }
 func (app) Label() string            { return "SKILLS-VIEWER" }
 func (app) DefaultLocalBin() string  { return "" }
 func (app) DefaultRemoteBin() string { return "" }
+
 // NeedsBin is false: the launch is the cs binary itself, which we resolve
 // at launch time via os.Executable(). Setting this to false skips the
 // remote PATH-prepend / not-found-guard machinery, which would be wrong
 // for an in-process viewer.
-func (app) NeedsBin() bool              { return false }
-func (app) SupportsRemoteControl() bool { return false }
-func (app) RequiresPath() bool          { return false }
-func (app) IsSystem() bool              { return true }
+func (app) NeedsBin() bool     { return false }
+func (app) RequiresPath() bool { return false }
+func (app) IsSystem() bool     { return true }
 
 // Skills viewer wears a warm amber so it stands out from the agents.
 func (app) Colors() apps.Colors {
@@ -58,6 +58,10 @@ func (app) LaunchExec(ctx apps.LaunchCtx) string {
 	}
 	return fmt.Sprintf("%s --skills-viewer", bin)
 }
+
+// MatchesPane returns 0: viewers are launched by cs, never typed into a
+// shell, so there is nothing to detect.
+func (app) MatchesPane(content string) int { return 0 }
 
 // ProcessMatches deliberately returns false: the skills viewer is a
 // pixel-fleet-internal viewer, not an external agent that discovery should

@@ -46,23 +46,28 @@ Re-source the rc file and verify again.
 
 ---
 
-## 3. The apps
+## 3. The agents
 
-`cs` is a launcher. The actual work happens inside one of these apps,
-which you pick per session (`cs <app> <name> <machine> <path>`).
+`cs <name> <machine> <path>` opens a **login shell** on the target
+machine. There is no agent to choose: you start one inside the session
+yourself, and the dashboard recognises it from what it draws.
 
-| App        | What it is                          | Needs binary?  | Install guide                |
-| ---------- | ----------------------------------- | -------------- | ---------------------------- |
-| `claude`   | Claude Code CLI                     | yes — `claude` | [apps/claude.md](apps/claude.md)     |
-| `codex`    | OpenAI Codex CLI                    | yes — `codex`  | [apps/codex.md](apps/codex.md)       |
-| `terminal` | Plain login shell, no agent         | no             | [apps/terminal.md](apps/terminal.md) |
-| `apps`     | Built-in: browse registered apps    | no             | [apps/apps.md](apps/apps.md)         |
-| `skills`   | Built-in: browse `~/.claude/skills` | no             | [apps/skills.md](apps/skills.md)     |
+So the only thing to install is whichever agent binaries the user wants
+available on each machine:
+
+| Agent      | What it is                          | Binary   | Install guide                    |
+| ---------- | ----------------------------------- | -------- | -------------------------------- |
+| Claude Code| Anthropic's CLI agent               | `claude` | [apps/claude.md](apps/claude.md) |
+| Codex      | OpenAI Codex CLI                    | `codex`  | [apps/codex.md](apps/codex.md)   |
 
 **Ask the user which agents they want on which machines** before
-installing anything. Then open the matching per-app guide above and
-follow it — each one covers local install, remote install via ssh, and
-verification with `cs doctor`.
+installing anything. Each guide covers local install, remote install via
+ssh, and verification with `cs doctor`.
+
+Two built-in viewers are launched by cs rather than typed, and keep their
+own subcommands: `cs apps` browses the registry
+([apps/apps.md](apps/apps.md)) and `cs skills` browses `~/.claude/skills`
+([apps/skills.md](apps/skills.md)).
 
 ---
 
@@ -112,6 +117,7 @@ Apply the fix, then re-run `cs doctor` until everything passes.
 Once `cs doctor` is clean, tell the user:
 
 - Run `cs` to open the dashboard.
+- A session is a shell: `cs work gpu-01 ~/proj`, then type `claude` in it.
 - Run `cs help` to see all commands and keybindings.
 - Optional config: `~/.config/cs/config.yaml`
 - Logs: `~/.config/cs/cs.log`
@@ -130,7 +136,6 @@ claude_bin: claude               # local agent binaries
 codex_bin: codex
 remote_claude_bin: claude        # remote agent binaries (PATH-resolved)
 remote_codex_bin: codex
-remote_control: true             # default --remote-control on Claude sessions
 clipboard: true                  # copy/paste + URL bindings (docs/clipboard.md)
 refresh_interval: 2s
 discovery_interval: 60s          # set to -1s to disable orphan auto-scan

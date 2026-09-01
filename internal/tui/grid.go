@@ -72,10 +72,10 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 
 			s := sessions[idx]
 			isSelected := idx == selected
-			// Resolve the app from the registry. Legacy sessions with an
-			// empty Agent fall back to the registry's default (typically
-			// claude — preserves the historical look).
-			app, _ := apps.Resolve(s.Agent)
+			// Resolve the app from the registry. Agent is whatever was last
+			// detected running in the pane; a session with nothing detected
+			// yet reads as a terminal.
+			app := apps.ForSession(s.Agent)
 			var appColors apps.Colors
 			var appLabel string
 			if app != nil {

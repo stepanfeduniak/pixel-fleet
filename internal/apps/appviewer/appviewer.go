@@ -23,15 +23,14 @@ func init() {
 
 type app struct{}
 
-func (app) Name() string                { return "app-viewer" }
-func (app) Aliases() []string           { return []string{"apps", "app", "appviewer"} }
-func (app) Label() string               { return "APP-VIEWER" }
-func (app) DefaultLocalBin() string     { return "" }
-func (app) DefaultRemoteBin() string    { return "" }
-func (app) NeedsBin() bool              { return false }
-func (app) SupportsRemoteControl() bool { return false }
-func (app) RequiresPath() bool          { return false }
-func (app) IsSystem() bool              { return true }
+func (app) Name() string             { return "app-viewer" }
+func (app) Aliases() []string        { return []string{"apps", "app", "appviewer"} }
+func (app) Label() string            { return "APP-VIEWER" }
+func (app) DefaultLocalBin() string  { return "" }
+func (app) DefaultRemoteBin() string { return "" }
+func (app) NeedsBin() bool           { return false }
+func (app) RequiresPath() bool       { return false }
+func (app) IsSystem() bool           { return true }
 
 // Indigo — distinct from skills' amber and the agent palette.
 func (a *app) Colors() apps.Colors {
@@ -51,8 +50,12 @@ func (a *app) LaunchExec(ctx apps.LaunchCtx) string {
 	return fmt.Sprintf("%s --app-viewer", bin)
 }
 
+// MatchesPane returns 0: viewers are launched by cs, never typed
+// into a shell, so there is nothing to detect.
+func (app) MatchesPane(content string) int { return 0 }
+
 func (a *app) ProcessMatches(processName string) bool { return false }
-func (a *app) DoctorProbes() []apps.Probe              { return nil }
+func (a *app) DoctorProbes() []apps.Probe             { return nil }
 
 // Run starts the app viewer TUI. Blocks until the user quits.
 //
@@ -92,7 +95,6 @@ func (s *source) Detail(i int) string {
 		fmt.Fprintf(&b, "Default local bin:      %s\n", emptyDash(a.DefaultLocalBin()))
 		fmt.Fprintf(&b, "Default remote bin:     %s\n", emptyDash(a.DefaultRemoteBin()))
 	}
-	fmt.Fprintf(&b, "Supports remote-control: %v\n", a.SupportsRemoteControl())
 	fmt.Fprintf(&b, "Requires path:          %v\n", a.RequiresPath())
 
 	probes := a.DoctorProbes()

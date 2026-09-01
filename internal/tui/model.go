@@ -543,8 +543,9 @@ func (m Model) handleGridKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case msg.String() == "n":
-		agents, _ := apps.FilterByKind()
-		return m.openNewSession(agents)
+		// No app list: an ordinary session is a shell. What runs in it is
+		// detected once it is running, not chosen here.
+		return m.openNewSession(nil)
 
 	case msg.String() == "N":
 		// Shift+N: pick a system / viewer app (skills, app viewer).
@@ -663,18 +664,38 @@ func (m Model) openNewSession(available []apps.App) (Model, tea.Cmd) {
 	m.selectedSugg = 0
 	m.selectedMachine = 0
 	m.selectedAgent = 0
-	m.focusedInput = fieldAgent
+	m.newSessionApps = available
+	m.focusedInput = m.firstField()
 	m.nameInput.Blur()
 	m.pathInput.Blur()
 	m.machines = session.ListMachines() // refresh
-	m.newSessionApps = available
 	return m, nil
 }
 
-// totalInputFields returns the number of input steps in the new session
-// flow. Driven by the fieldXxx constants — adjust those, not this number.
-func (m Model) totalInputFields() int {
-	return fieldCount
+// showsAgentPicker reports whether the form's first field is in play.
+// An ordinary session has no app to pick — it is a shell, and whatever runs
+// in it is detected — so `n` hides the field. The system-app flow (`N`) keeps
+// it, except when there is only one app to choose, which auto-selects.
+func (m Model) showsAgentPicker() bool {
+	return len(m.newSessionApps) >= 2
+}
+
+// firstField is the field the form opens on.
+func (m Model) firstField() int {
+	if m.showsAgentPicker() {
+		return fieldAgent
+	}
+	return fieldName
+}
+
+// nextField advances the tab cycle, stepping over the agent picker when it
+// is hidden.
+func (m Model) nextField(current int) int {
+	next := (current + 1) % fieldCount
+	if next == fieldAgent && !m.showsAgentPicker() {
+		next = (next + 1) % fieldCount
+	}
+	return next
 }
 
 // agentName returns the canonical agent string for the current selection.
@@ -699,7 +720,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
-		m.focusedInput = (m.focusedInput + 1) % m.totalInputFields()
+		m.focusedInput = m.nextField(m.focusedInput)
 		return m.focusNewInput()
 
 	case "up":
@@ -1060,27 +1081,30 @@ func (m Model) viewNewSession() string {
 	// Build form sections in order: agent first, then name, machine, path.
 	var formParts []string
 
-	// Agent picker — driven by the apps registry. Adding an app to
-	// internal/apps/builtin extends the picker without touching this code.
-	agentLines := make([]string, 0, len(m.newSessionApps))
-	for i, a := range m.newSessionApps {
-		prefix := "  "
-		style := dimStyle()
-		if i == m.selectedAgent {
-			prefix = "▸ "
-			if m.focusedInput == fieldAgent {
-				style = lipgloss.NewStyle().Foreground(whiteColor).Bold(true)
-			} else {
-				style = lipgloss.NewStyle().Foreground(whiteColor)
+	// Agent picker — driven by the apps registry, and only shown for the
+	// system-app flow. An ordinary session is a shell; there is nothing to
+	// pick.
+	if m.showsAgentPicker() {
+		agentLines := make([]string, 0, len(m.newSessionApps))
+		for i, a := range m.newSessionApps {
+			prefix := "  "
+			style := dimStyle()
+			if i == m.selectedAgent {
+				prefix = "▸ "
+				if m.focusedInput == fieldAgent {
+					style = lipgloss.NewStyle().Foreground(whiteColor).Bold(true)
+				} else {
+					style = lipgloss.NewStyle().Foreground(whiteColor)
+				}
 			}
+			agentLines = append(agentLines, style.Render(prefix+a.Name()))
 		}
-		agentLines = append(agentLines, style.Render(prefix+a.Name()))
+		formParts = append(formParts,
+			label("App:      [↑↓ to select]", m.focusedInput == fieldAgent),
+			strings.Join(agentLines, "\n"),
+			"",
+		)
 	}
-	formParts = append(formParts,
-		label("Agent:    [↑↓ to select]", m.focusedInput == fieldAgent),
-		strings.Join(agentLines, "\n"),
-		"",
-	)
 
 	// Name
 	formParts = append(formParts,

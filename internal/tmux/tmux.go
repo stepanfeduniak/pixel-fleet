@@ -148,6 +148,25 @@ func CapturePaneContent(session, windowName string, height int) (string, error) 
 	return string(out), nil
 }
 
+// PaneCurrentCommand returns the foreground command running in a window's
+// first pane. For a local session this is the agent itself once the user
+// starts one ("claude", "codex"); for a remote session it is only ever the
+// ssh client, so callers should not bother asking.
+func PaneCurrentCommand(session, windowName string) (string, error) {
+	target := fmt.Sprintf("%s:%s", session, windowName)
+	cmd := exec.Command("tmux", "list-panes", "-t", target, "-F", "#{pane_current_command}")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			return line, nil
+		}
+	}
+	return "", nil
+}
+
 // SelectAndAttach selects a window and attaches to the session.
 // Returns when the user detaches.
 func SelectAndAttach(session, windowName string) error {

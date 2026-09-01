@@ -18,15 +18,14 @@ func init() {
 
 type app struct{}
 
-func (app) Name() string         { return "claude" }
-func (app) Aliases() []string    { return nil }
-func (app) Label() string        { return "CLAUDE" }
+func (app) Name() string             { return "claude" }
+func (app) Aliases() []string        { return nil }
+func (app) Label() string            { return "CLAUDE" }
 func (app) DefaultLocalBin() string  { return "claude" }
 func (app) DefaultRemoteBin() string { return "claude" }
-func (app) NeedsBin() bool       { return true }
-func (app) SupportsRemoteControl() bool { return true }
-func (app) RequiresPath() bool   { return true }
-func (app) IsSystem() bool       { return false }
+func (app) NeedsBin() bool           { return true }
+func (app) RequiresPath() bool       { return true }
+func (app) IsSystem() bool           { return false }
 
 // Colors for Claude — light sky-blue. Pleasant, calm, and clearly distinct
 // from codex's red and the working-status indicator's medium blue (#60A5FA).
@@ -41,19 +40,44 @@ func (app) Colors() apps.Colors {
 	}
 }
 
-// LaunchExec returns the bin path. Remote-control bridging is enabled after
-// the session is up by sending the `/remote-control` slash command via
-// tmux send-keys (see the RC enable snippet in session.buildRemoteCommand).
-//
-// We deliberately do NOT use `claude remote-control` as the launch command:
-// all three of its spawn modes (same-dir, worktree, session) turn the
-// launching terminal into a server-status landing page that the user
-// cannot type into.
+// LaunchExec returns the bin path. cs no longer launches claude — a session
+// is a shell and you start claude in it yourself — so this is only what the
+// app viewer reports and what an out-of-tree caller building on the registry
+// would use.
 func (app) LaunchExec(ctx apps.LaunchCtx) string {
 	if ctx.Bin == "" {
 		return "claude"
 	}
 	return ctx.Bin
+}
+
+// claudeMarkers are the pieces of Claude Code's chrome that no other agent
+// draws. Weights are derived from the live pane captures in
+// internal/session/detect_status_test.go.
+//
+// Note what is absent: "esc to interrupt" appears in Codex's footer too, so
+// it is evidence of *an* agent, not of Claude, and scoring it would make the
+// two indistinguishable mid-turn.
+var claudeMarkers = []apps.Marker{
+	// The mode footer, present between turns and while generating.
+	{Text: "auto mode on", Weight: 3},
+	{Text: "? for shortcuts", Weight: 3},
+	// The turn-completion line, e.g. "✻ Cogitated for 8s".
+	{Text: "✻ ", Weight: 2},
+	// The activity line's token counter, e.g. "(19s · ↓ 778 tokens)".
+	{Text: " tokens)", Weight: 2},
+	// Tool output gutter.
+	{Text: "⎿", Weight: 2},
+	// The permission modal, which carries no mode footer of its own.
+	{Text: "Do you want to proceed?", Weight: 2},
+	{Text: "Esc to cancel", Weight: 2},
+	// Claude's conversation bullet — U+25CF, distinct from Codex's U+2022.
+	{Text: "●", Weight: 1, LineStart: true},
+}
+
+// MatchesPane scores a pane against Claude Code's chrome.
+func (app) MatchesPane(content string) int {
+	return apps.Score(content, claudeMarkers)
 }
 
 // ProcessMatches returns true if the foreground command name looks like
@@ -65,9 +89,9 @@ func (app) ProcessMatches(processName string) bool {
 	return strings.Contains(strings.ToLower(processName), "claude")
 }
 
-// DoctorProbes contributes the standard install / version checks plus the
-// Claude-specific `claude remote-control --help` probe (which verifies the
-// installed Claude is new enough to support the RC bridge).
+// DoctorProbes contributes the standard install / version check. cs launches
+// a shell and you start claude in it yourself, so all the doctor needs to
+// confirm is that the binary is there.
 func (app) DoctorProbes() []apps.Probe {
 	return []apps.Probe{
 		{
@@ -86,17 +110,6 @@ func (app) DoctorProbes() []apps.Probe {
 					detail = detail + "  (" + path + ")"
 				}
 				return "PASS", detail
-			},
-		},
-		{
-			Key:   "CLAUDE_RC",
-			Name:  "remote-control supported",
-			Shell: `if claude remote-control --help >/dev/null 2>&1; then echo "CLAUDE_RC::yes"; else echo "CLAUDE_RC::no"; fi`,
-			Evaluate: func(value string) (string, string) {
-				if strings.EqualFold(value, "yes") {
-					return "PASS", "claude remote-control supported"
-				}
-				return "FAIL", "claude remote-control --help failed"
 			},
 		},
 	}

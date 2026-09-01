@@ -152,7 +152,7 @@ func appBadgeStyle(c apps.Colors) lipgloss.Style {
 // Sessions with an empty Agent (legacy / pre-Agent-field records) are
 // treated as the registry's default app — historically that's claude.
 func agentBadge(agent string) string {
-	app, _ := apps.Resolve(agent)
+	app := apps.ForSession(agent)
 	if app == nil {
 		return ""
 	}

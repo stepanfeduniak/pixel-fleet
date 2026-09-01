@@ -40,10 +40,10 @@ type AppBins struct {
 }
 
 type Config struct {
-	RemoteBase        string        `yaml:"remote_base"`
-	LocalBase         string        `yaml:"local_base"`
-	LocalExtraPaths   []string      `yaml:"local_extra_paths"`
-	RefreshInterval   time.Duration `yaml:"refresh_interval"`
+	RemoteBase      string        `yaml:"remote_base"`
+	LocalBase       string        `yaml:"local_base"`
+	LocalExtraPaths []string      `yaml:"local_extra_paths"`
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
 	// Well-known per-app binary overrides. Kept for backward-compat with
 	// existing config.yaml files; the generic Apps map below covers
 	// anything else (including out-of-tree apps).
@@ -57,22 +57,19 @@ type Config struct {
 	//     aider:
 	//       local_bin: aider
 	//       remote_bin: /opt/aider/bin/aider
-	Apps              map[string]AppBins `yaml:"apps"`
+	Apps map[string]AppBins `yaml:"apps"`
 	// Machines is a per-machine override map keyed by SSH host alias.
 	// Lets a single host (e.g. a cloud GPU box with repos on a network
 	// volume) point at a different remote_base without changing the
 	// global default.
-	Machines          map[string]MachineConfig `yaml:"machines"`
-	SessionName       string                   `yaml:"session_name"`
-	ScanTimeout       time.Duration      `yaml:"scan_timeout"`
+	Machines    map[string]MachineConfig `yaml:"machines"`
+	SessionName string                   `yaml:"session_name"`
+	ScanTimeout time.Duration            `yaml:"scan_timeout"`
 	// DiscoveryInterval controls how often the dashboard re-scans known
 	// machines in the background for orphaned cs sessions (alive on a
 	// remote, missing from the local store). Set to 0 to disable.
 	DiscoveryInterval time.Duration `yaml:"discovery_interval"`
 	RemoteTmuxSession string        `yaml:"remote_tmux_session"`
-	// RemoteControl defaults to true. Use a pointer so YAML can distinguish
-	// "unset" (→ default true) from "explicitly false".
-	RemoteControl *bool `yaml:"remote_control"`
 	// Clipboard controls whether cs installs copy-to-system-clipboard and
 	// URL key bindings on the local tmux server, and the matching OSC 52
 	// settings on remotes. Defaults to true. Turn it off if you keep your
@@ -97,7 +94,6 @@ func DefaultConfig() *Config {
 		ScanTimeout:       5 * time.Second,
 		DiscoveryInterval: 60 * time.Second,
 		RemoteTmuxSession: "cs-remote",
-		RemoteControl:     &enabled,
 		Clipboard:         &enabled,
 	}
 }
@@ -149,10 +145,6 @@ func Load() *Config {
 	if cfg.RemoteTmuxSession == "" {
 		cfg.RemoteTmuxSession = "cs-remote"
 	}
-	if cfg.RemoteControl == nil {
-		enabled := true
-		cfg.RemoteControl = &enabled
-	}
 	if cfg.Clipboard == nil {
 		enabled := true
 		cfg.Clipboard = &enabled
@@ -168,15 +160,6 @@ func (c *Config) IsClipboardEnabled() bool {
 		return true
 	}
 	return *c.Clipboard
-}
-
-// IsRemoteControlEnabled returns whether Claude should be launched with the
-// --remote-control flag by default for sessions on this config.
-func (c *Config) IsRemoteControlEnabled() bool {
-	if c.RemoteControl == nil {
-		return true
-	}
-	return *c.RemoteControl
 }
 
 // RemoteBaseFor returns the remote search/resolution base path for a given

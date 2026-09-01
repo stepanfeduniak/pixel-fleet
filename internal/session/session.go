@@ -91,9 +91,7 @@ type Session struct {
 // Agent selects which CLI to launch ("claude" or "codex"). When empty it
 // defaults to "claude" for back-compat with callers that predate the
 // agent-choice feature. The LocalClaudeBin / RemoteClaudeBin field names
-// are historical — they hold whichever agent binary the manager picked
-// (claude or codex). RemoteControl is ignored when Agent == "codex"
-// because codex has no claude.ai/code bridge.
+// are historical — they hold whichever agent binary the manager picked.
 type BuildOpts struct {
 	Machine         string // "home" or SSH host alias
 	Path            string // working directory on the target machine
@@ -109,7 +107,6 @@ type BuildOpts struct {
 	// no Ctrl-b N to switch between unrelated sessions, no other cs
 	// sessions visible from inside this one.
 	RemoteSessionName string
-	RemoteControl     bool // launch claude with --remote-control (claude only; ignored for codex)
 	// Clipboard enables the OSC 52 clipboard bridge on the remote tmux, so
 	// selections made inside a remote session reach the local machine's
 	// clipboard. See clipboardBridgeSnippet.
@@ -125,7 +122,6 @@ func BuildCommand(machine, path, claudeBin, remoteClaudeBin string) string {
 		LocalClaudeBin:  claudeBin,
 		RemoteClaudeBin: remoteClaudeBin,
 		WindowName:      "session",
-		RemoteControl:   true,
 	})
 }
 
@@ -139,7 +135,6 @@ func BuildCommandWithSetup(machine, path, claudeBin, remoteClaudeBin, setup stri
 		RemoteClaudeBin: remoteClaudeBin,
 		Setup:           setup,
 		WindowName:      "session",
-		RemoteControl:   true,
 	})
 }
 
@@ -163,14 +158,12 @@ func BuildShellCommand(opts BuildOpts) string {
 	return buildRemoteCommand(opts)
 }
 
-// resolveApp looks up the app for opts and falls back to the registry's
-// default. Returns nil only if the registry is empty (which would mean
-// internal/apps/builtin wasn't imported — a build configuration error).
+// resolveApp picks the app a session launches. An empty Agent — every
+// ordinary session — is a login shell; only the system-app windows name
+// anything else. Returns nil only if the registry is empty, which would mean
+// internal/apps/builtin wasn't imported: a build configuration error.
 func resolveApp(opts BuildOpts) apps.App {
-	if a, ok := apps.Resolve(opts.Agent); ok {
-		return a
-	}
-	return apps.Default()
+	return apps.ForSession(opts.Agent)
 }
 
 // launchCtxFor builds the LaunchCtx an app sees, picking the right bin
@@ -318,38 +311,9 @@ fi`, launchExec, launchExec)
 	}
 	launchB64 := base64.StdEncoding.EncodeToString([]byte(launchScript))
 
-	// After creating the new tmux session, fire a detached background poller
-	// (still on the remote machine) that watches the session's pane for the
-	// Claude prompt and sends `/remote-control` to it. setsid + nohup
-	// detaches it from the SSH session so it survives the cs CLI exiting.
-	// Self-terminates after ~60 attempts. Only injected for apps that
-	// declare SupportsRemoteControl.
 	clipboardSnippet := ""
 	if opts.Clipboard {
 		clipboardSnippet = clipboardBridgeSnippet
-	}
-
-	rcEnableSnippet := ""
-	if opts.RemoteControl && app.SupportsRemoteControl() {
-		rcEnableSnippet = `
-setsid nohup bash -c '
-    SESSION="$1"
-    for i in $(seq 1 60); do
-        sleep 0.5
-        content=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
-        case "$content" in
-            *"Remote Control"*|*"/remote-control is active"*)
-                exit 0
-                ;;
-            *"❯"*)
-                tmux send-keys -t "$SESSION" "/remote-control" Enter 2>/dev/null
-                exit 0
-                ;;
-        esac
-    done
-' _ "$SESSION" </dev/null >/dev/null 2>&1 &
-disown 2>/dev/null || true
-`
 	}
 
 	// The bootstrap script runs in the remote user's shell. It ensures the
@@ -381,10 +345,10 @@ tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
 tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
 tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true%s
 if [ "$SESSION_FRESH" = "1" ]; then
-    sleep 0.5%s
+    sleep 0.5
 fi
 exec tmux attach -t "$SESSION"
-`, shellQuote(remoteSession), launchB64, clipboardSnippet, rcEnableSnippet)
+`, shellQuote(remoteSession), launchB64, clipboardSnippet)
 
 	bootstrapB64 := base64.StdEncoding.EncodeToString([]byte(bootstrap))
 

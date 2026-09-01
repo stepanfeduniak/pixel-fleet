@@ -81,13 +81,9 @@ func (m *Manager) EnsureSession() error {
 
 // CreateOptions controls per-session overrides for Create.
 type CreateOptions struct {
-	// RemoteControl, if non-nil, overrides the config default for whether
-	// Claude is launched with --remote-control. Ignored when Agent == "codex"
-	// (codex has no claude.ai/code bridge).
-	RemoteControl *bool
-	// Agent selects which CLI to launch. "" or "claude" launches claude;
-	// "codex" launches codex. Anything else falls through to claude with
-	// a log warning.
+	// Agent names a system app to launch (skills viewer, app viewer).
+	// Empty — every ordinary session — launches a login shell; what runs
+	// inside it is detected, not declared. See session.DetectAgent.
 	Agent string
 }
 
@@ -97,7 +93,7 @@ func (m *Manager) Create(name, machine, path string) (*Session, error) {
 }
 
 // CreateWithOptions launches a new Claude Code session and accepts per-call
-// overrides such as disabling remote-control for a single session.
+// overrides, namely the system app to launch for a viewer window.
 func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptions) (*Session, error) {
 	freshSession := !tmux.SessionExists(m.cfg.SessionName)
 	if err := m.EnsureSession(); err != nil {
@@ -108,7 +104,12 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 	// viewer, anything the user has flipped via config) get an empty
 	// resolvedPath when no path was provided — buildLocalCommand and
 	// buildRemoteCommand both skip the `cd` in that case.
-	app, _ := apps.Resolve(opts.Agent)
+	//
+	// ForSession, not Resolve: an empty Agent is an ordinary session, which
+	// is a shell. Resolve would hand back the registry's first-registered
+	// app — claude — and this value is what the launch command is built
+	// from, so the session would exec an agent instead of a login shell.
+	app := apps.ForSession(opts.Agent)
 	requiresPath := true
 	if app != nil {
 		requiresPath = m.cfg.RequiresPathFor(app.Name(), app.RequiresPath())
@@ -140,14 +141,6 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 	}
 	localBin, remoteBin := m.binsForApp(app)
 
-	// Build command
-	rcEnabled := m.cfg.IsRemoteControlEnabled()
-	if opts.RemoteControl != nil {
-		rcEnabled = *opts.RemoteControl
-	}
-	if app == nil || !app.SupportsRemoteControl() {
-		rcEnabled = false
-	}
 	// Each cs session gets its own dedicated remote tmux session.
 	remoteSession := remoteSessionName(name)
 	cmd := BuildShellCommand(BuildOpts{
@@ -158,7 +151,6 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 		RemoteClaudeBin:   remoteBin,
 		WindowName:        name,
 		RemoteSessionName: remoteSession,
-		RemoteControl:     rcEnabled,
 		Clipboard:         m.cfg.IsClipboardEnabled(),
 	})
 	log.Printf("Session command: %s", cmd)
@@ -481,7 +473,12 @@ func (m *Manager) Capture(name string, height int) (string, error) {
 	return tmux.CapturePaneContent(m.cfg.SessionName, name, height)
 }
 
-// CaptureAll captures pane content for all sessions and updates their status.
+// CaptureAll captures pane content for all sessions, works out what is
+// running in each, and updates their status.
+//
+// The agent is detected here rather than chosen at creation: every session is
+// a shell, so what it *is* can only be known by looking at it. Detection has
+// to happen before DetectStatus, which picks its rules from the answer.
 func (m *Manager) CaptureAll(sessions []Session, height int) []Session {
 	for i := range sessions {
 		output, err := m.Capture(sessions[i].Name, height)
@@ -491,9 +488,46 @@ func (m *Manager) CaptureAll(sessions []Session, height int) []Session {
 			continue
 		}
 		sessions[i].LastOutput = output
+
+		// The pane's own process is only visible for local sessions; a
+		// remote one is running ssh, and is identified from the rendered
+		// screen instead.
+		processName := ""
+		if sessions[i].Machine == "home" {
+			processName, _ = tmux.PaneCurrentCommand(m.cfg.SessionName, sessions[i].Name)
+		}
+		// A second capture, without scrollback: `output` above deliberately
+		// reaches back through history for the cell preview, but detection
+		// must see only what is on screen now or an exited agent's chrome
+		// keeps it alive forever.
+		screen, err := m.Capture(sessions[i].Name, 0)
+		if err != nil {
+			screen = output
+		}
+		detected := DetectAgent(screen, processName, sessions[i].Agent)
+		if detected != sessions[i].Agent {
+			sessions[i].Agent = detected
+			m.persistAgent(sessions[i].Name, detected)
+		}
+
 		sessions[i].Status = DetectStatus(output, sessions[i].Agent)
 	}
 	return sessions
+}
+
+// persistAgent records a newly detected agent so the badge survives a
+// dashboard restart. Called only when the value actually changes — the
+// refresh loop runs every couple of seconds and the store is a whole-file
+// rewrite.
+func (m *Manager) persistAgent(name, agent string) {
+	rec, ok := m.store.Lookup(name)
+	if !ok || rec.Agent == agent {
+		return
+	}
+	rec.Agent = agent
+	if err := m.store.Save(rec); err != nil {
+		log.Printf("persist detected agent for %s: %v", name, err)
+	}
 }
 
 // LocalRepoPaths returns the configured local search paths for repo discovery.

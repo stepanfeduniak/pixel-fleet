@@ -1,4 +1,4 @@
-# Installing Codex (`cs codex`)
+# Installing Codex
 
 > **You are Claude, installing the `codex` binary for pixel-fleet. Do
 > this on every machine — local laptop and each SSH remote — where the
@@ -7,7 +7,8 @@
 ## What it is
 
 [OpenAI Codex CLI](https://github.com/openai/codex) — OpenAI's coding
-agent. Runs inside a pixel-fleet tmux session like any other app.
+agent. You start it inside a pixel-fleet session yourself; the
+dashboard recognises it from its chrome.
 
 ## Install (local)
 

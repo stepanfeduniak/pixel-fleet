@@ -20,10 +20,8 @@ func (app) Label() string            { return "CODEX" }
 func (app) DefaultLocalBin() string  { return "codex" }
 func (app) DefaultRemoteBin() string { return "codex" }
 func (app) NeedsBin() bool           { return true }
-// Codex has no claude.ai/code bridge — the cs RC bootstrap stays off.
-func (app) SupportsRemoteControl() bool { return false }
-func (app) RequiresPath() bool          { return true }
-func (app) IsSystem() bool              { return false }
+func (app) RequiresPath() bool       { return true }
+func (app) IsSystem() bool           { return false }
 
 // Codex sessions wear strong red so they're unmistakable in a sea of claude
 // blue. SelectedColor is red-200, a near-white tint that pops hard against
@@ -42,6 +40,32 @@ func (app) LaunchExec(ctx apps.LaunchCtx) string {
 		return "codex"
 	}
 	return ctx.Bin
+}
+
+// codexMarkers are the pieces of the Codex TUI that Claude never draws.
+// Weights are derived from the live pane captures in
+// internal/session/detect_status_test.go.
+var codexMarkers = []apps.Marker{
+	// Turn separator, e.g. "─ Worked for 3m 15s ─────".
+	{Text: "─ Worked for ", Weight: 3},
+	// Streaming status line, e.g. "• Working (4m 03s • esc to interrupt)".
+	{Text: "• Working (", Weight: 3},
+	// The radio-button approval modal's footer.
+	{Text: "Press enter to confirm", Weight: 3},
+	// Model + cwd footer, e.g. "gpt-5.5 default fast · ~/repo".
+	{Text: "default fast ·", Weight: 3},
+	{Text: "gpt-", Weight: 2},
+	// Codex's input prompt — U+203A, distinct from Claude's "❯".
+	{Text: "› ", Weight: 2, LineStart: true},
+	// Tool-call line and its output gutter.
+	{Text: "• Ran ", Weight: 2, LineStart: true},
+	{Text: "└ ", Weight: 1, LineStart: true},
+	{Text: "Thinking…", Weight: 1},
+}
+
+// MatchesPane scores a pane against the Codex TUI.
+func (app) MatchesPane(content string) int {
+	return apps.Score(content, codexMarkers)
 }
 
 func (app) ProcessMatches(processName string) bool {

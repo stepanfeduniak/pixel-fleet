@@ -1,8 +1,12 @@
 # pixel-fleet
 
-A multi-machine TUI (`cs`) for persistent Claude Code / Codex / shell
-sessions across your laptop and any SSH host. Sessions live in tmux on
-the target machine and survive disconnects.
+A multi-machine TUI (`cs`) for persistent shell sessions across your
+laptop and any SSH host. Sessions live in tmux on the target machine and
+survive disconnects.
+
+A session is just a login shell. Start Claude Code, Codex, a build or
+nothing in it — the dashboard works out what is running and badges and
+colours the cell accordingly.
 
 ## Install
 
@@ -16,10 +20,17 @@ set up each remote machine, verify with `cs doctor`.
 ## Usage
 
 ```bash
-cs            # open the dashboard
-cs help       # all commands and keybindings
-cs doctor     # preflight all known machines
+cs                              # open the dashboard
+cs <name> <machine> <path>      # open a session and go to it
+cs help                         # all commands and keybindings
+cs doctor                       # preflight all known machines
 ```
+
+There is no agent to pick. `cs work gpu-01 ~/proj` gives you a shell in
+`~/proj` on `gpu-01`; type `claude` or `codex` there and the grid picks it
+up on the next refresh.
+
+**[docs/detection.md](docs/detection.md)**
 
 ## Copy, paste, and links
 

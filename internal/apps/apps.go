@@ -105,15 +105,22 @@ type App interface {
 	//   terminal:        "${SHELL:-/bin/bash} -l"    (login shell)
 	LaunchExec(ctx LaunchCtx) string
 
-	// SupportsRemoteControl reports whether the cs RC bootstrap should run
-	// for sessions of this app. Currently only Claude Code has the
-	// `/remote-control` slash command, so only the claude app returns true.
-	SupportsRemoteControl() bool
-
 	// ProcessMatches reports whether the given process name (e.g. the
 	// foreground tmux pane_current_command) suggests an instance of this
-	// app. Used by discovery to identify orphans.
+	// app. Used by discovery to identify orphans, and by session detection
+	// on local sessions where the pane's own process is visible.
 	ProcessMatches(processName string) bool
+
+	// MatchesPane scores how strongly a captured pane looks like this app,
+	// 0 meaning "no evidence". cs no longer asks which agent to launch — a
+	// session is a shell, and whatever the user starts in it is recognised
+	// from what it draws. This is the only signal available for remote
+	// sessions, whose local pane is running ssh.
+	//
+	// Build the score with apps.Score and a []Marker; see the claude and
+	// codex apps. Apps that are launched rather than typed (the terminal
+	// itself, the viewers) return 0.
+	MatchesPane(content string) int
 
 	// DoctorProbes returns shell-side checks the doctor should run on each
 	// machine. Empty / nil is fine — apps that don't need bespoke probes
@@ -160,7 +167,7 @@ var (
 	registered  []App
 	byName      = make(map[string]App)
 	aliasOf     = make(map[string]string) // alias -> canonical name
-	defaultName string                     // first registered app, the implicit default
+	defaultName string                    // first registered app, the implicit default
 )
 
 // Register adds an app to the registry. Panics on duplicate Name() or alias

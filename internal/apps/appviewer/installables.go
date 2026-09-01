@@ -42,11 +42,11 @@ This install spawns a new Claude session that will:
      (` + "`npm install -g @anthropic-ai/claude-code`" + ` or curl-script).
   2. Run ` + "`claude /login`" + ` so the binary has credentials.
   3. Verify with ` + "`claude --version`" + ` and confirm
-     ` + "`claude remote-control --help`" + ` works (needed by cs).`,
+     the binary is on PATH.`,
 			Prompt: "Please install (or upgrade) Anthropic's Claude Code CLI on this machine. " +
 				"Use the official installer — `npm install -g @anthropic-ai/claude-code` or the recommended curl-script, whichever Anthropic's docs currently say. " +
 				"Run `claude /login` if it's not already authed. " +
-				"Verify with `claude --version` AND confirm `claude remote-control --help` returns successfully — pixel-fleet relies on the remote-control bridge.",
+				"Verify with `claude --version`.",
 			WindowName: "install-claude-code",
 		},
 	}

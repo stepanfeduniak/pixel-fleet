@@ -51,46 +51,39 @@ func main() {
 
 	args := os.Args[1:]
 
-	// --no-rc may appear anywhere on the command line; pull it off.
-	noRC := false
-	filtered := args[:0]
-	for _, a := range args {
-		switch a {
-		case "--no-rc", "--no-remote-control":
-			noRC = true
-		default:
-			filtered = append(filtered, a)
-		}
-	}
-	args = filtered
-
 	if len(args) == 0 {
 		cmdDashboard(mgr, cfg)
 		return
 	}
 
-	// First check if args[0] is a registered app's name or alias. Any app
-	// registered via apps.Register automatically gets its own subcommand.
+	// System apps (skills viewer, app viewer) still get their own
+	// subcommand — they are in-process TUIs cs launches, not something you
+	// could type into a shell. Their positional args are all optional:
+	// `cs skills` is enough.
 	//
-	// Session apps (claude, codex, terminal): require <name> <machine> <path>.
-	// Viewer apps (skills, app-viewer): all positional args optional —
-	//   `cs skills` is enough; the launch happens on home with no path.
-	if agent := apps.Normalize(args[0]); agent != "" {
-		app, _ := apps.Lookup(agent)
-		// requires_path can be overridden in config (apps.<name>.requires_path:
-		// false), so even a regular agent can opt out of needing a path.
-		if app != nil && !cfg.RequiresPathFor(app.Name(), app.RequiresPath()) {
-			name, machine, path := defaultsForViewer(args[1:], app.Name())
-			cmdNewAndDashboard(mgr, cfg, name, machine, path, noRC, agent)
+	// Agents deliberately do NOT get one. A session is a shell; you start
+	// claude or codex in it yourself and cs recognises what is running.
+	if name := apps.Normalize(args[0]); name != "" {
+		app, _ := apps.Lookup(name)
+		if app != nil && app.IsSystem() {
+			n, machine, path := defaultsForViewer(args[1:], app.Name())
+			cmdNewAndDashboard(mgr, cfg, n, machine, path, name)
 			return
 		}
-		if len(args) < 4 {
-			fmt.Fprintf(os.Stderr, "Usage: cs %s <name> <machine> <path>\n", args[0])
-			fmt.Fprintf(os.Stderr, "Example: cs %s training gpu-01 ~/ml-project\n", args[0])
-			os.Exit(1)
+		// An agent name where the session name goes. This used to be the
+		// way in, so say what replaced it — otherwise the positional form
+		// below would quietly create a session *called* "claude" on a
+		// machine called "training".
+		fmt.Fprintf(os.Stderr, "cs no longer takes an agent name — a session is a shell.\n\n")
+		if len(args) >= 4 {
+			fmt.Fprintf(os.Stderr, "  instead of:  cs %s %s %s %s\n", args[0], args[1], args[2], args[3])
+			fmt.Fprintf(os.Stderr, "  run:         cs %s %s %s\n\n", args[1], args[2], args[3])
+		} else {
+			fmt.Fprintf(os.Stderr, "  instead of:  cs %s <name> <machine> <path>\n", args[0])
+			fmt.Fprintf(os.Stderr, "  run:         cs <name> <machine> <path>\n\n")
 		}
-		cmdNewAndDashboard(mgr, cfg, args[1], args[2], args[3], noRC, agent)
-		return
+		fmt.Fprintf(os.Stderr, "Then type `%s` in the session — cs works out what is running.\n", name)
+		os.Exit(1)
 	}
 
 	switch args[0] {
@@ -150,7 +143,15 @@ func main() {
 			os.Exit(1)
 		}
 	default:
+		// `cs <name> <machine> <path>` — the one way to open a session.
+		// It is a login shell; whatever you run in it is detected.
+		if len(args) >= 3 {
+			cmdNewAndDashboard(mgr, cfg, args[0], args[1], args[2], "")
+			return
+		}
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
+		fmt.Fprintf(os.Stderr, "To open a session: cs <name> <machine> <path>\n")
+		fmt.Fprintf(os.Stderr, "Example:           cs training gpu-01 ~/ml-project\n\n")
 		cmdHelp()
 		os.Exit(1)
 	}
@@ -236,23 +237,17 @@ func cmdDashboard(mgr *session.Manager, cfg *config.Config) {
 	attach(cfg.SessionName)
 }
 
-func cmdNewAndDashboard(mgr *session.Manager, cfg *config.Config, name, machine, path string, noRC bool, agent string) {
+// cmdNewAndDashboard opens a session and drops the user into the dashboard.
+// agent is empty for an ordinary session — a shell — and names a system app
+// only for the `cs skills` / `cs apps` windows.
+func cmdNewAndDashboard(mgr *session.Manager, cfg *config.Config, name, machine, path, agent string) {
 	ensureDashboard(mgr, cfg)
 
-	opts := session.CreateOptions{Agent: agent}
-	if noRC {
-		f := false
-		opts.RemoteControl = &f
-	}
-	s, err := mgr.CreateWithOptions(name, machine, path, opts)
+	s, err := mgr.CreateWithOptions(name, machine, path, session.CreateOptions{Agent: agent})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	} else {
-		shownAgent := agent
-		if shownAgent == "" {
-			shownAgent = "claude"
-		}
-		fmt.Printf("Created session: %s (agent=%s, machine=%s, path=%s)\n", s.Name, shownAgent, machine, s.Path)
+		fmt.Printf("Created session: %s (machine=%s, path=%s)\n", s.Name, machine, s.Path)
 	}
 
 	_ = tmux.SelectWindow(cfg.SessionName, dashboardWindow)
@@ -505,55 +500,47 @@ func cmdDoctor(args []string) {
 }
 
 func cmdHelp() {
-	// Build a per-app usage section dynamically from the registry. New apps
-	// added to internal/apps/builtin (or imported from out-of-tree modules)
-	// show up in help automatically.
+	// System apps still get their own subcommand and are listed from the
+	// registry, so a newly registered one shows up here automatically.
+	// Agents do not: you start those in the session yourself.
 	var appLines strings.Builder
 	for _, a := range apps.All() {
-		flag := "         " // 9 spaces, matches " [--no-rc]" width
-		if a.SupportsRemoteControl() {
-			flag = " [--no-rc]"
+		if !a.IsSystem() {
+			continue
 		}
-		// System apps don't need a path — show short-form usage so users
-		// don't get tripped up by "<machine> <path>" they don't need.
-		usage := "<name> <machine> <path>"
-		if a.IsSystem() {
-			usage = "                       " // 23 spaces — keeps trailing column aligned
-		}
-		appLines.WriteString(fmt.Sprintf("  cs %-13s %s%s  Open %s\n",
-			a.Name(), usage, flag, a.Label()))
+		appLines.WriteString(fmt.Sprintf("  cs %-40sOpen %s\n", a.Name(), a.Label()))
 	}
 	fmt.Printf(`pixel-fleet (cs) - Multi-machine agent session manager
 
 Usage:
   cs                                         Open the dashboard
+  cs <name> <machine> <path>                 Open a session (a shell) and go to it
 %s  cs ls                                      List all sessions across all machines
   cs adopt <#> <name>                        Adopt orphaned session by number from cs ls
   cs scan                                    Scan machines for orphaned sessions
-  cs doctor [machine...]                     Preflight checks (linger, tmux, claude, RC)
+  cs doctor [machine...]                     Preflight checks (linger, tmux, agents)
   cs kill <name>                             Kill a session by name
   cs kill-all                                Kill all sessions
   cs urls [--copy]                           List URLs on this pane (menu, or copy newest)
   cs help                                    Show this help`, appLines.String())
 	fmt.Print(`
 
-Persistence and remote control:
-  Remote sessions run inside a persistent tmux session (cs-remote) on the
-  target machine, so they survive SSH drops, laptop sleep, and viewer
-  disconnects. Claude sessions also launch with --remote-control by default,
-  exposing them on claude.ai/code and the Claude mobile/desktop apps.
-  Use --no-rc on a claude/codex command to opt out for a single session.
+Sessions:
+  A session is a login shell on the target machine. Start whatever you want
+  in it — claude, codex, a build, nothing — and the dashboard works out what
+  is running and badges it accordingly. There is no agent to pick up front.
 
-  Prerequisite for persistence: each remote needs systemd user-linger enabled
-  once: ssh <machine> 'sudo loginctl enable-linger $USER'.
+Persistence:
+  Remote sessions run inside a persistent tmux session on the target machine,
+  so they survive SSH drops, laptop sleep, and viewer disconnects.
+
+  Prerequisite: each remote needs systemd user-linger enabled once:
+  ssh <machine> 'sudo loginctl enable-linger $USER'.
   Run 'cs doctor' to verify all known machines.
 
 Examples:
-  cs claude training gpu-01 ~/ml-project    Launch Claude on gpu-01 in ~/ml-project
-  cs claude frontend home ~/webapp          Launch Claude locally in ~/webapp
-  cs claude lab a100 ~/proj --no-rc         Launch without --remote-control
-  cs codex review gpu-01 ~/ml-project       Launch Codex on gpu-01
-  cs term shell gpu-01 ~/ml-project         Plain login shell — no agent
+  cs training gpu-01 ~/ml-project           Open a session on gpu-01 in ~/ml-project
+  cs frontend home ~/webapp                 Open one locally in ~/webapp
   cs doctor                                 Preflight on all known machines
 
 Machines:
