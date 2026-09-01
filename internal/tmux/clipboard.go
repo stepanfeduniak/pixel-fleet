@@ -91,6 +91,31 @@ func openerBin() string {
 	return "xdg-open"
 }
 
+// hasClipboardFeature reports whether the wildcard clipboard entry cs adds is
+// already in the server's terminal-features list.
+func hasClipboardFeature() bool {
+	out, err := exec.Command("tmux", "show-options", "-sv", "terminal-features").Output()
+	if err != nil {
+		return false
+	}
+	return listsClipboardFeature(string(out))
+}
+
+// listsClipboardFeature reports whether `show -sv terminal-features` output
+// already contains the wildcard clipboard entry. terminal-features is an array
+// option, so the output is one entry per LINE — reading it as a single
+// comma-separated list finds nothing and cs appends another copy every run.
+func listsClipboardFeature(out string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		for _, f := range strings.Split(line, ",") {
+			if strings.TrimSpace(f) == "*:clipboard" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasBin(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
@@ -153,7 +178,6 @@ func ConfigureClipboard() error {
 		// local buffer, and advertise clipboard support for every TERM so
 		// the sequence is actually emitted regardless of terminfo.
 		{"set-option", "-s", "set-clipboard", "on"},
-		{"set-option", "-sa", "terminal-features", ",*:clipboard"},
 		// The remote half of the chain: buffer set by OSC 52 -> OS clipboard.
 		{"set-hook", "-g", "pane-set-clipboard",
 			fmt.Sprintf("run-shell %q", "tmux save-buffer - | "+copyCmd)},
@@ -187,6 +211,12 @@ func ConfigureClipboard() error {
 			[]string{"bind-key", "u", "run-shell", q + " urls '#{pane_id}'"},
 			[]string{"bind-key", "U", "run-shell", q + " urls --copy '#{pane_id}'"},
 		)
+	}
+
+	// terminal-features is a list and -a appends, so adding it unconditionally
+	// would grow the option by another copy on every cs invocation.
+	if !hasClipboardFeature() {
+		cmds = append(cmds, []string{"set-option", "-sa", "terminal-features", ",*:clipboard"})
 	}
 
 	var firstErr error

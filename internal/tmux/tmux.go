@@ -29,7 +29,7 @@ func CreateSession(session string) error {
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	return setSessionOptions(session)
+	return ApplySessionOptions(session)
 }
 
 // CreateSessionWithCommand creates a new tmux session with a named window running a command.
@@ -38,16 +38,27 @@ func CreateSessionWithCommand(session, windowName, command string) error {
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	return setSessionOptions(session)
+	return ApplySessionOptions(session)
 }
 
-// setSessionOptions configures tmux options for a cs-managed session.
+// ApplySessionOptions configures the tmux options a cs-managed session needs.
 // Uses -g for session options and -wg for window options so future windows
 // inherit the values.
-func setSessionOptions(session string) error {
+//
+// Idempotent, and called on every cs entry point rather than only at session
+// creation: the tmux server outlives cs, so a session created by an older
+// version — or one whose options a user changed by hand — is brought back
+// into line instead of silently drifting.
+func ApplySessionOptions(session string) error {
 	opts := [][]string{
 		{"set-option", "-g", "history-limit", "50000"},
 		{"set-option", "-g", "mouse", "on"},
+		// The dashboard draws its own header and footer, so tmux's status
+		// bar is a second bar along the bottom showing the same windows the
+		// grid already shows. Remote sessions have hidden it from the
+		// start; this is the local half. Scoped to the cs session with -t
+		// so the user's own tmux sessions keep their status bar.
+		{"set-option", "-t", session, "status", "off"},
 		// remain-on-exit is a window option; use -wg to set the global default.
 		{"set-option", "-wg", "remain-on-exit", "on"},
 	}
@@ -147,7 +158,7 @@ func SelectAndAttach(session, windowName string) error {
 	}
 
 	cmd := exec.Command("tmux", "attach-session", "-t", session)
-	cmd.Stdin = nil  // inherit from parent
+	cmd.Stdin = nil // inherit from parent
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run()

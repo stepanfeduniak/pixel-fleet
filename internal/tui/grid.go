@@ -166,7 +166,13 @@ func renderGrid(sessions []session.Session, selected int, width, height int) str
 		rowStrings = append(rowStrings, lipgloss.JoinHorizontal(lipgloss.Top, cellStrings...))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, rowStrings...)
+	// Cell heights are clamped to a minimum, so on a short terminal with
+	// several rows the cells can add up to more than the budget. Returning
+	// more lines than View() accounted for makes the whole frame taller than
+	// the terminal: the alternate screen scrolls and the previous frame's
+	// footer is left stranded above the new one, showing as a doubled bar.
+	return lipgloss.NewStyle().MaxHeight(height).Render(
+		lipgloss.JoinVertical(lipgloss.Left, rowStrings...))
 }
 
 // truncateContent trims captured pane output to fit within the cell.

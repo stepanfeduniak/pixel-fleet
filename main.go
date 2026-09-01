@@ -195,10 +195,10 @@ func cmdURLs(args []string) {
 // app viewer, …) that don't require a working path. The user can still
 // override any positional arg explicitly:
 //
-//   cs skills                            -> name="skills", machine="home", path=""
-//   cs skills foo                        -> name="foo",    machine="home", path=""
-//   cs skills foo gpu-01                 -> name="foo",    machine="gpu-01", path=""
-//   cs skills foo gpu-01 ~/x             -> name="foo",    machine="gpu-01", path="~/x"
+//	cs skills                            -> name="skills", machine="home", path=""
+//	cs skills foo                        -> name="foo",    machine="home", path=""
+//	cs skills foo gpu-01                 -> name="foo",    machine="gpu-01", path=""
+//	cs skills foo gpu-01 ~/x             -> name="foo",    machine="gpu-01", path="~/x"
 //
 // The default name is the app's canonical name (e.g. "skills"), so a
 // second `cs skills` invocation returns to the same window instead of
@@ -260,11 +260,6 @@ func cmdNewAndDashboard(mgr *session.Manager, cfg *config.Config, name, machine,
 }
 
 func ensureDashboard(mgr *session.Manager, cfg *config.Config) {
-	// Refresh the copy/URL bindings even when the session already exists:
-	// the tmux server can be older than this binary.
-	if err := tmux.ConfigureClipboard(); err != nil {
-		log.Printf("clipboard bindings: %v", err)
-	}
 	if !tmux.SessionExists(cfg.SessionName) {
 		csPath, _ := os.Executable()
 		dashCmd := fmt.Sprintf("%s --dashboard-tui", csPath)
@@ -274,6 +269,11 @@ func ensureDashboard(mgr *session.Manager, cfg *config.Config) {
 			os.Exit(1)
 		}
 	} else {
+		// Reapply on an existing session: the tmux server can be older than
+		// this binary, so its options and bindings may predate them.
+		if err := tmux.ApplySessionOptions(cfg.SessionName); err != nil {
+			log.Printf("session options: %v", err)
+		}
 		windows, _ := tmux.ListWindows(cfg.SessionName)
 		hasDashboard := false
 		for _, w := range windows {

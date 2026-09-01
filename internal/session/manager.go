@@ -71,10 +71,10 @@ func (m *Manager) EnsureSession() error {
 	if !tmux.SessionExists(m.cfg.SessionName) {
 		return tmux.CreateSession(m.cfg.SessionName)
 	}
-	// The session predates this process — possibly an older cs — so
-	// (re)install the copy/URL bindings on the running server.
-	if err := tmux.ConfigureClipboard(); err != nil {
-		log.Printf("clipboard bindings: %v", err)
+	// The session predates this process — possibly an older cs — so reapply
+	// the options and bindings it should have.
+	if err := tmux.ApplySessionOptions(m.cfg.SessionName); err != nil {
+		log.Printf("session options: %v", err)
 	}
 	return nil
 }
@@ -453,7 +453,6 @@ func (m *Manager) runRemoteTmux(machine, remoteCmd string) error {
 	}
 	return nil
 }
-
 
 // cleanupWorktree removes a git worktree and its directory.
 func (m *Manager) cleanupWorktree(sourceRepo, worktreePath string) {

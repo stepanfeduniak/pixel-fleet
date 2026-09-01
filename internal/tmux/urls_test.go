@@ -111,3 +111,28 @@ func TestTmuxQuote(t *testing.T) {
 		t.Errorf("tmuxQuote() = %s, want %s", got, want)
 	}
 }
+
+func TestListsClipboardFeature(t *testing.T) {
+	// Real `tmux show -sv terminal-features` output: one entry per line.
+	const present = `xterm*:clipboard:ccolour:cstyle:focus:title
+screen*:title
+rxvt*:ignorefkeys
+*:clipboard`
+	if !listsClipboardFeature(present) {
+		t.Error("did not find *:clipboard; cs would append a duplicate on every run")
+	}
+
+	const absent = `xterm*:clipboard:ccolour:cstyle:focus:title
+screen*:title
+rxvt*:ignorefkeys`
+	if listsClipboardFeature(absent) {
+		t.Error("matched xterm*:clipboard as the wildcard entry")
+	}
+
+	if listsClipboardFeature("") {
+		t.Error("empty output must not report the feature as present")
+	}
+	if !listsClipboardFeature("screen*:title,*:clipboard") {
+		t.Error("comma-joined entries on one line must also be matched")
+	}
+}
