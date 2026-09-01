@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -55,6 +56,12 @@ func setSessionOptions(session string) error {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("tmux %s: %s (%w)", strings.Join(args, " "), out, err)
 		}
+	}
+	// Copy/paste and URL bindings. Best-effort: a tmux that rejects one of
+	// them should not stop the session from coming up, so the error is
+	// logged rather than returned.
+	if err := ConfigureClipboard(); err != nil {
+		log.Printf("clipboard bindings: %v", err)
 	}
 	return nil
 }

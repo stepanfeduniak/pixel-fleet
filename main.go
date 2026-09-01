@@ -43,6 +43,10 @@ func main() {
 	log.Printf("cs started with args: %v", os.Args[1:])
 
 	cfg := config.Load()
+	// Must be set before any tmux session is created: it gates the copy and
+	// URL key bindings installed on the local tmux server.
+	tmux.ClipboardEnabled = cfg.IsClipboardEnabled()
+	session.SetClipboardEnabled(cfg.IsClipboardEnabled())
 	mgr := session.NewManager(cfg)
 
 	args := os.Args[1:]
@@ -111,6 +115,23 @@ func main() {
 		cmdKill(mgr, args[1])
 	case "kill-all":
 		cmdKillAll(mgr)
+	case "urls":
+		cmdURLs(args[1:])
+	case "--open-url":
+		// Re-entry point: a URL menu entry invoked us to open its choice.
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: cs --open-url <list-file> <n>")
+			os.Exit(1)
+		}
+		n, err := strconv.Atoi(args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad index %q\n", args[2])
+			os.Exit(1)
+		}
+		if err := tmux.OpenURLFromList(args[1], n); err != nil {
+			log.Printf("open-url: %v", err)
+			os.Exit(1)
+		}
 	case "help", "--help", "-h":
 		cmdHelp()
 	case "--dashboard-tui":
@@ -131,6 +152,41 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
 		cmdHelp()
+		os.Exit(1)
+	}
+}
+
+// cmdURLs backs the prefix+u / prefix+U tmux bindings: it finds the URLs on a
+// pane and either offers them in a menu or copies the newest to the clipboard.
+// With no pane argument it uses the caller's own pane, so `cs urls` works when
+// typed straight into a session.
+func cmdURLs(args []string) {
+	copyOnly := false
+	pane := ""
+	for _, a := range args {
+		if a == "--copy" {
+			copyOnly = true
+			continue
+		}
+		pane = a
+	}
+	if pane == "" {
+		pane = os.Getenv("TMUX_PANE")
+	}
+	if pane == "" {
+		fmt.Fprintln(os.Stderr, "cs urls: not inside tmux (no pane to read)")
+		os.Exit(1)
+	}
+
+	var err error
+	if copyOnly {
+		err = tmux.CopyNewestURL(pane)
+	} else {
+		err = tmux.ShowURLMenu(pane)
+	}
+	if err != nil {
+		log.Printf("urls: %v", err)
+		fmt.Fprintf(os.Stderr, "cs urls: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -204,6 +260,11 @@ func cmdNewAndDashboard(mgr *session.Manager, cfg *config.Config, name, machine,
 }
 
 func ensureDashboard(mgr *session.Manager, cfg *config.Config) {
+	// Refresh the copy/URL bindings even when the session already exists:
+	// the tmux server can be older than this binary.
+	if err := tmux.ConfigureClipboard(); err != nil {
+		log.Printf("clipboard bindings: %v", err)
+	}
 	if !tmux.SessionExists(cfg.SessionName) {
 		csPath, _ := os.Executable()
 		dashCmd := fmt.Sprintf("%s --dashboard-tui", csPath)
@@ -472,6 +533,7 @@ Usage:
   cs doctor [machine...]                     Preflight checks (linger, tmux, claude, RC)
   cs kill <name>                             Kill a session by name
   cs kill-all                                Kill all sessions
+  cs urls [--copy]                           List URLs on this pane (menu, or copy newest)
   cs help                                    Show this help`, appLines.String())
 	fmt.Print(`
 
@@ -510,6 +572,17 @@ Coding blocker:
   gallery stays on screen but you cannot go into a session. Sessions
   keep running the whole time — the blocker only stops you watching.
   It survives a restart. Press b again and type 'break' to end early.
+
+Copy and links (inside any session, local or remote):
+  drag        Select with the mouse - lands on the system clipboard
+  dbl-click   Copy a word          triple-click  Copy a line
+  prefix u    Menu of the URLs on screen; press its number to open it
+  prefix U    Copy the newest URL on screen
+  prefix C-v  Paste the system clipboard into the pane
+  prefix [    Scrollback / copy mode; Enter copies the selection
+
+  Remote sessions copy through an OSC 52 bridge back to this machine.
+  Turn the whole feature off with 'clipboard: false' in config.yaml.
 
 Return to dashboard:
   F1          Always works

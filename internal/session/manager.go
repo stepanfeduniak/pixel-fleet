@@ -71,6 +71,11 @@ func (m *Manager) EnsureSession() error {
 	if !tmux.SessionExists(m.cfg.SessionName) {
 		return tmux.CreateSession(m.cfg.SessionName)
 	}
+	// The session predates this process — possibly an older cs — so
+	// (re)install the copy/URL bindings on the running server.
+	if err := tmux.ConfigureClipboard(); err != nil {
+		log.Printf("clipboard bindings: %v", err)
+	}
 	return nil
 }
 
@@ -154,6 +159,7 @@ func (m *Manager) CreateWithOptions(name, machine, path string, opts CreateOptio
 		WindowName:        name,
 		RemoteSessionName: remoteSession,
 		RemoteControl:     rcEnabled,
+		Clipboard:         m.cfg.IsClipboardEnabled(),
 	})
 	log.Printf("Session command: %s", cmd)
 

@@ -21,6 +21,18 @@ cs help       # all commands and keybindings
 cs doctor     # preflight all known machines
 ```
 
+## Copy, paste, and links
+
+Dragging with the mouse in any session — local or remote — puts the
+selection on your machine's clipboard. `prefix u` lists the URLs on
+screen and opens the one you pick in your browser.
+
+Remote sessions are a nested tmux, so the selection is made on the far
+host; cs bridges it back over OSC 52. On by default, `clipboard: false`
+to turn it off.
+
+**[docs/clipboard.md](docs/clipboard.md)**
+
 ## Coding blocker
 
 Watching agents work is not working. Press `b` in the dashboard, pick a

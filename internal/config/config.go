@@ -73,6 +73,13 @@ type Config struct {
 	// RemoteControl defaults to true. Use a pointer so YAML can distinguish
 	// "unset" (→ default true) from "explicitly false".
 	RemoteControl *bool `yaml:"remote_control"`
+	// Clipboard controls whether cs installs copy-to-system-clipboard and
+	// URL key bindings on the local tmux server, and the matching OSC 52
+	// settings on remotes. Defaults to true. Turn it off if you keep your
+	// own copy bindings in ~/.tmux.conf and would rather cs left them
+	// alone — the bindings are server-global, as tmux has no per-session
+	// key tables.
+	Clipboard *bool `yaml:"clipboard"`
 }
 
 func DefaultConfig() *Config {
@@ -91,6 +98,7 @@ func DefaultConfig() *Config {
 		DiscoveryInterval: 60 * time.Second,
 		RemoteTmuxSession: "cs-remote",
 		RemoteControl:     &enabled,
+		Clipboard:         &enabled,
 	}
 }
 
@@ -145,8 +153,21 @@ func Load() *Config {
 		enabled := true
 		cfg.RemoteControl = &enabled
 	}
+	if cfg.Clipboard == nil {
+		enabled := true
+		cfg.Clipboard = &enabled
+	}
 
 	return cfg
+}
+
+// IsClipboardEnabled returns whether cs should install its copy/URL tmux
+// bindings locally and enable the OSC 52 clipboard bridge on remotes.
+func (c *Config) IsClipboardEnabled() bool {
+	if c.Clipboard == nil {
+		return true
+	}
+	return *c.Clipboard
 }
 
 // IsRemoteControlEnabled returns whether Claude should be launched with the

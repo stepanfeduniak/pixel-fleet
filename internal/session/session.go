@@ -13,6 +13,20 @@ import (
 // sshOpts are the SSH options used for all remote sessions.
 const sshOpts = "-t -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
 
+// clipboardEnabled mirrors the `clipboard` config option. Enforcing the
+// remote clipboard bridge happens on paths that have no *config.Config in
+// hand — the background discovery scan and reattach-command building — so the
+// setting is latched here once at startup by SetClipboardEnabled.
+var clipboardEnabled = true
+
+// SetClipboardEnabled latches the `clipboard` config option for this process.
+// Call it before creating or scanning any session.
+func SetClipboardEnabled(v bool) { clipboardEnabled = v }
+
+// ClipboardEnabled reports whether the remote clipboard bridge should be
+// installed on the machines cs talks to.
+func ClipboardEnabled() bool { return clipboardEnabled }
+
 // shellQuote single-quotes s for safe inclusion in a shell command.
 // Embedded single quotes are escaped as '\''.
 func shellQuote(s string) string {
@@ -96,6 +110,10 @@ type BuildOpts struct {
 	// sessions visible from inside this one.
 	RemoteSessionName string
 	RemoteControl     bool // launch claude with --remote-control (claude only; ignored for codex)
+	// Clipboard enables the OSC 52 clipboard bridge on the remote tmux, so
+	// selections made inside a remote session reach the local machine's
+	// clipboard. See clipboardBridgeSnippet.
+	Clipboard bool
 }
 
 // BuildCommand is a thin wrapper preserving the legacy positional API for tests
@@ -187,6 +205,45 @@ func buildLocalCommand(opts BuildOpts) string {
 	return fmt.Sprintf("bash -c 'set -e; %s; exec %s'", opts.Setup, exec)
 }
 
+// clipboardBridgeSnippet configures the remote tmux so that copying inside a
+// remote session reaches the local machine's clipboard.
+//
+// A remote session is a nested tmux: the local viewer pane runs ssh, which
+// runs this tmux. Because this inner tmux enables mouse reporting, the outer
+// tmux forwards mouse events straight to it, so the *remote* tmux is what
+// makes the selection - on a machine that cannot touch the laptop's
+// clipboard. What it can do is emit the selection as an OSC 52 escape
+// sequence, which travels back over the ssh TTY into the local viewer pane;
+// the local tmux accepts it into a buffer and its pane-set-clipboard hook
+// (installed by internal/tmux.ConfigureClipboard) copies it to the OS
+// clipboard.
+//
+// terminal-features is forced on for every TERM because the ssh TTY inherits
+// TERM from the outer tmux pane, and not every terminfo entry advertises the
+// clipboard capability that gates the escape sequence.
+//
+// The bindings are server-global - tmux has no per-session key tables - so
+// they also apply to any other tmux session on the remote host. All they do
+// is route copies through the clipboard, which is why that is acceptable.
+//
+// The click bindings pass their command sequence as one quoted string. Via
+// `\;` the shell would hand tmux a bare `;`, which tmux reads as a command
+// separator on its own command line: only `select-pane` would be bound and
+// the rest would run immediately.
+//
+// Every command ends in `|| true`: an older remote tmux that rejects one of
+// these must not stop the session from launching.
+const clipboardBridgeSnippet = `
+tmux set-option -s set-clipboard on >/dev/null 2>&1 || true
+tmux set-option -sa terminal-features ',*:clipboard' >/dev/null 2>&1 || true
+tmux bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
+tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
+tmux bind-key -T copy-mode    Enter send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
+tmux bind-key -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
+tmux bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
+tmux bind-key -n DoubleClick1Pane 'select-pane ; copy-mode -M ; send-keys -X select-word ; send-keys -X copy-pipe-and-cancel' >/dev/null 2>&1 || true
+tmux bind-key -n TripleClick1Pane 'select-pane ; copy-mode -M ; send-keys -X select-line ; send-keys -X copy-pipe-and-cancel' >/dev/null 2>&1 || true`
+
 // buildRemoteCommand assembles the SSH+remote-tmux launch command using the
 // per-session model: each cs session lives in its own dedicated tmux session
 // on the remote (no shared cs-remote, no neighboring windows). The remote
@@ -267,6 +324,11 @@ fi`, launchExec, launchExec)
 	// detaches it from the SSH session so it survives the cs CLI exiting.
 	// Self-terminates after ~60 attempts. Only injected for apps that
 	// declare SupportsRemoteControl.
+	clipboardSnippet := ""
+	if opts.Clipboard {
+		clipboardSnippet = clipboardBridgeSnippet
+	}
+
 	rcEnableSnippet := ""
 	if opts.RemoteControl && app.SupportsRemoteControl() {
 		rcEnableSnippet = `
@@ -317,12 +379,12 @@ fi
 tmux set-option -t "$SESSION" history-limit 50000 >/dev/null 2>&1 || true
 tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
 tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
-tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true
+tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true%s
 if [ "$SESSION_FRESH" = "1" ]; then
     sleep 0.5%s
 fi
 exec tmux attach -t "$SESSION"
-`, shellQuote(remoteSession), launchB64, rcEnableSnippet)
+`, shellQuote(remoteSession), launchB64, clipboardSnippet, rcEnableSnippet)
 
 	bootstrapB64 := base64.StdEncoding.EncodeToString([]byte(bootstrap))
 
@@ -350,9 +412,24 @@ func BuildReattachCommand(machine, tmuxSession, window string) string {
 		target = tmuxSession + ":" + window
 	}
 	if machine == "home" {
+		// The local tmux server is configured directly by
+		// internal/tmux.ConfigureClipboard, so there is nothing to install
+		// here.
 		return fmt.Sprintf("tmux attach -t %s", target)
 	}
-	sshCmd := fmt.Sprintf("ssh %s %s 'tmux attach -t %s'", sshOpts, machine, target)
+
+	// Reattaching to a session cs did not just launch still has to leave the
+	// remote tmux configured, or copying inside an adopted session would
+	// silently go nowhere. The script is base64'd for the same reason the
+	// launch bootstrap is: it contains quotes, and `exec tmux attach` needs
+	// the ssh TTY as its stdin.
+	script := fmt.Sprintf("exec tmux attach -t %s\n", target)
+	if ClipboardEnabled() {
+		script = strings.TrimPrefix(clipboardBridgeSnippet, "\n") + "\n" + script
+	}
+	inner := fmt.Sprintf(`bash -c "$(echo %s | base64 -d)"`,
+		base64.StdEncoding.EncodeToString([]byte(script)))
+	sshCmd := fmt.Sprintf("ssh %s %s %s", sshOpts, machine, shellQuote(inner))
 	return wrapWithReconnect(sshCmd)
 }
 

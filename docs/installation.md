@@ -131,6 +131,7 @@ codex_bin: codex
 remote_claude_bin: claude        # remote agent binaries (PATH-resolved)
 remote_codex_bin: codex
 remote_control: true             # default --remote-control on Claude sessions
+clipboard: true                  # copy/paste + URL bindings (docs/clipboard.md)
 refresh_interval: 2s
 discovery_interval: 60s          # set to -1s to disable orphan auto-scan
 ```

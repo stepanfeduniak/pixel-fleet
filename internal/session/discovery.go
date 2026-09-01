@@ -36,16 +36,39 @@ func (d DiscoveredSession) Label() string {
 // probeCommand is the single-roundtrip SSH command to discover tmux sessions running claude.
 const probeScript = `tmux list-sessions -F '#{session_name}' 2>/dev/null; for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do tmux list-windows -t "$s" -F "SESSION:$s	#{window_index}	#{window_name}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null; done`
 
+// probeScriptFor returns the script to run on a machine's shell.
+//
+// For remote machines the clipboard bridge is prepended, which is how cs
+// enforces it on tmux sessions it did not launch itself: the scan already
+// reaches every known machine on an interval, so the settings are reapplied
+// there for free — no extra SSH round trip — and sessions started by an older
+// cs, or adopted from outside it, end up configured too. The bridge commands
+// are all silenced and non-fatal, so they cannot disturb the scan output that
+// parseScanOutput reads.
+//
+// "home" is deliberately excluded. The local tmux copies through pbcopy
+// directly (see internal/tmux.ConfigureClipboard); installing the remote
+// bindings there would replace that with an OSC 52 emission the terminal
+// discards, silently breaking local copy.
+func probeScriptFor(machine Machine) string {
+	if machine.Name == "home" || !ClipboardEnabled() {
+		return probeScript
+	}
+	return clipboardBridgeSnippet + "\n" + probeScript
+}
+
 // ScanMachine probes a single machine for Claude sessions.
 func ScanMachine(machine Machine, timeout time.Duration) ([]DiscoveredSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	script := probeScriptFor(machine)
+
 	var cmd *exec.Cmd
 	if machine.Name == "home" {
-		cmd = exec.CommandContext(ctx, "bash", "-c", probeScript)
+		cmd = exec.CommandContext(ctx, "bash", "-c", script)
 	} else {
-		cmd = exec.CommandContext(ctx, "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine.Name, probeScript)
+		cmd = exec.CommandContext(ctx, "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine.Name, script)
 	}
 
 	out, err := cmd.CombinedOutput()
