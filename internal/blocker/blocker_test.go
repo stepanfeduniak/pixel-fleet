@@ -188,3 +188,55 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+// hasMonotonic reports whether t carries a monotonic clock reading. Round(0)
+// is the documented way to strip one, so a value that changes when stripped
+// had one.
+func hasMonotonic(t time.Time) bool {
+	return t.String() != t.Round(0).String()
+}
+
+// A blocker must measure elapsed real time, not time the machine was awake.
+//
+// time.Now() carries a monotonic reading, now.Add(d) preserves it, and Go's
+// Before/Sub use the monotonic clock whenever both operands have one. On
+// macOS that clock is mach_absolute_time, which does not advance while the
+// system is asleep — so a State built from an unstripped time.Now() freezes
+// its countdown for as long as the lid is shut. Persisting and reloading
+// happened to hide this (JSON drops the reading), so it only bit the process
+// that started the blocker.
+func TestStartUsesWallClockNotMonotonic(t *testing.T) {
+	isolate(t)
+
+	s, err := Start(90*time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if hasMonotonic(s.Until) {
+		t.Errorf("Until carries a monotonic reading (%s); the countdown will pause while the machine sleeps", s.Until)
+	}
+	if hasMonotonic(s.StartedAt) {
+		t.Errorf("StartedAt carries a monotonic reading (%s)", s.StartedAt)
+	}
+}
+
+// Active and Remaining strip the reading themselves, so a State assembled by
+// hand — as the TUI's in-memory copy is — gets the same wall-clock treatment.
+func TestActiveAndRemainingStripMonotonic(t *testing.T) {
+	now := time.Now() // carries a monotonic reading
+	s := State{Until: now.Add(30 * time.Minute), StartedAt: now, Duration: 30 * time.Minute}
+
+	// Compare against a purely wall-clock deadline: the two must agree, which
+	// is only true if the monotonic reading is being ignored on both sides.
+	wall := State{Until: now.Round(0).Add(30 * time.Minute)}
+
+	for _, at := range []time.Time{now, now.Add(29 * time.Minute), now.Add(31 * time.Minute)} {
+		if got, want := s.Active(at), wall.Active(at.Round(0)); got != want {
+			t.Errorf("Active(%v) = %v, wall-clock says %v", at, got, want)
+		}
+		if got, want := s.Remaining(at), wall.Remaining(at.Round(0)); got != want {
+			t.Errorf("Remaining(%v) = %v, wall-clock says %v", at, got, want)
+		}
+	}
+}

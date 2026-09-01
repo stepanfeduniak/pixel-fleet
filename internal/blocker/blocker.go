@@ -7,6 +7,10 @@
 // the dashboard TUI crashing, a ctrl+c, or a fresh `cs` invocation all
 // reload the same deadline and pick the lockout back up.
 //
+// The deadline is wall-clock, deliberately: a blocker counts down elapsed
+// real time, not time the machine was awake for. Closing the laptop and
+// going to lunch spends the blocker. See wallClock.
+//
 // This is a commitment device, not a security boundary. Anyone willing to
 // delete the state file is out, and that is fine: the job is to break the
 // reflex of dropping into a session every thirty seconds, not to imprison
@@ -49,9 +53,25 @@ func Path() (string, error) {
 	return filepath.Join(home, ".config", "cs", "blocker.json"), nil
 }
 
+// wallClock strips the monotonic clock reading from a time.
+//
+// This is what keeps a blocker measured in elapsed real time rather than in
+// time the machine happened to be awake for. Go's Before and Sub use the
+// monotonic reading whenever both operands carry one, and on macOS that
+// clock is mach_absolute_time, which does not advance while the system is
+// asleep — so a laptop shut for a lunch hour would come back with the
+// countdown exactly where it was left. Going to lunch is precisely when the
+// blocker should be running down.
+//
+// Applied at both ends: Start strips it so the value cs holds in memory
+// matches what Load would return (a JSON round-trip drops it anyway), and
+// the comparisons strip it so the guarantee does not depend on how the
+// State was built.
+func wallClock(t time.Time) time.Time { return t.Round(0) }
+
 // Active reports whether a blocker is running at the given instant.
 func (s State) Active(now time.Time) bool {
-	return !s.Until.IsZero() && now.Before(s.Until)
+	return !s.Until.IsZero() && wallClock(now).Before(wallClock(s.Until))
 }
 
 // Remaining returns the time left on the blocker, or 0 if none is running.
@@ -59,7 +79,7 @@ func (s State) Remaining(now time.Time) time.Duration {
 	if !s.Active(now) {
 		return 0
 	}
-	return s.Until.Sub(now)
+	return wallClock(s.Until).Sub(wallClock(now))
 }
 
 // Load reads the persisted blocker state.
@@ -128,8 +148,8 @@ func Clear() error {
 // to an in-memory blocker for the current process rather than no blocker.
 func Start(d time.Duration, now time.Time) (State, error) {
 	s := State{
-		Until:     now.Add(d),
-		StartedAt: now,
+		Until:     wallClock(now.Add(d)),
+		StartedAt: wallClock(now),
 		Duration:  d,
 	}
 	return s, Save(s)
