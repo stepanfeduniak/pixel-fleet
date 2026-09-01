@@ -57,6 +57,124 @@ func probeScriptFor(machine Machine) string {
 	return clipboardBridgeSnippet + "\n" + probeScript
 }
 
+// Health is what the last probe of a machine found. It drives the markers
+// in the dashboard's machine picker, and lets callers skip work that would
+// only ever time out against a machine that is not answering.
+type Health int
+
+const (
+	HealthUnknown Health = iota // not probed yet this run
+	HealthOnline                // the probe came back
+	HealthOffline               // unreachable: DNS, TCP, or the probe timed out
+	HealthDenied                // the machine is there, but SSH would not let us in
+)
+
+const (
+	// probeBackoffBase is the wait after a machine's first failed probe, and
+	// doubles with each consecutive failure up to probeBackoffMax.
+	probeBackoffBase = time.Minute
+	probeBackoffMax  = 15 * time.Minute
+
+	// probeMaxFailures clamps the doubling so the shift can't overflow.
+	probeMaxFailures = 10
+)
+
+// ProbeThrottle backs off machines that keep failing to answer.
+//
+// Without it every scan pays a full ScanTimeout for each machine that is not
+// there — a laptop that has been off for a week is probed just as eagerly as
+// one that answered a second ago, and with a handful of stale ~/.ssh/config
+// entries that is most of the scan. A host that has been down for an hour
+// will still be down in another minute, so each consecutive failure pushes
+// the next attempt further out. One success clears the penalty immediately.
+type ProbeThrottle struct {
+	mu    sync.Mutex
+	state map[string]*probeState
+}
+
+type probeState struct {
+	failures int
+	nextTry  time.Time
+	health   Health // last observed, carried forward while we skip
+}
+
+// NewProbeThrottle returns a throttle with no history: every machine is
+// probed on the first scan.
+func NewProbeThrottle() *ProbeThrottle {
+	return &ProbeThrottle{state: make(map[string]*probeState)}
+}
+
+// skip reports whether a machine is still inside its backoff window, along
+// with the Health to carry forward for it. A nil throttle never skips, which
+// is what the manual "fetch all" wants.
+func (p *ProbeThrottle) skip(name string, now time.Time) (bool, Health) {
+	if p == nil {
+		return false, HealthUnknown
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	st, ok := p.state[name]
+	if !ok || !now.Before(st.nextTry) {
+		return false, HealthUnknown
+	}
+	return true, st.health
+}
+
+// record folds a probe result in: success clears the backoff, failure
+// lengthens it.
+func (p *ProbeThrottle) record(name string, h Health, now time.Time) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	st, ok := p.state[name]
+	if !ok {
+		st = &probeState{}
+		p.state[name] = st
+	}
+	st.health = h
+
+	if h == HealthOnline {
+		st.failures = 0
+		st.nextTry = time.Time{}
+		return
+	}
+
+	st.failures++
+	if st.failures > probeMaxFailures {
+		st.failures = probeMaxFailures
+	}
+	delay := probeBackoffBase << (st.failures - 1)
+	if delay > probeBackoffMax {
+		delay = probeBackoffMax
+	}
+	st.nextTry = now.Add(delay)
+}
+
+// classifyProbe turns a probe failure into a Health. The distinction worth
+// drawing is "the machine is not there" against "the machine is there and
+// refused us" — the first is a stale ~/.ssh/config entry, the second is a
+// key to fix, and they want different things from the user.
+//
+// ScanMachine folds the ssh output into its error, so matching on the error
+// text is enough and ScanMachine keeps its signature.
+func classifyProbe(err error) Health {
+	if err == nil {
+		return HealthOnline
+	}
+	text := err.Error()
+	switch {
+	case strings.Contains(text, "Permission denied"),
+		strings.Contains(text, "Too many authentication failures"),
+		strings.Contains(text, "Host key verification failed"):
+		return HealthDenied
+	}
+	return HealthOffline
+}
+
 // ScanMachine probes a single machine for Claude sessions.
 func ScanMachine(machine Machine, timeout time.Duration) ([]DiscoveredSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -122,31 +240,50 @@ func parseScanOutput(machineName, output string) []DiscoveredSession {
 	return results
 }
 
-// ScanAll probes all machines in parallel for Claude sessions.
-func ScanAll(machines []Machine, timeout time.Duration) []DiscoveredSession {
+// ScanAll probes all machines in parallel for Claude sessions. Alongside
+// the sessions it returns each machine's Health, so a scan that mostly
+// fails still tells the dashboard something worth showing.
+//
+// Machines still inside their backoff window are skipped and their previous
+// Health carried forward. Pass a nil throttle to probe everything — that is
+// what a user-initiated fetch does, since asking for a scan is a good reason
+// to stop trusting the cache.
+func ScanAll(machines []Machine, timeout time.Duration, throttle *ProbeThrottle) ([]DiscoveredSession, map[string]Health) {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
 		results []DiscoveredSession
+		health  = make(map[string]Health, len(machines))
 	)
 
+	now := time.Now()
 	for _, m := range machines {
+		// Sequential, before any goroutine starts, so no lock is needed.
+		if skip, carried := throttle.skip(m.Name, now); skip {
+			health[m.Name] = carried
+			continue
+		}
+
 		wg.Add(1)
 		go func(machine Machine) {
 			defer wg.Done()
 			found, err := ScanMachine(machine, timeout)
+			h := classifyProbe(err)
+			throttle.record(machine.Name, h, time.Now())
+
+			mu.Lock()
+			health[machine.Name] = h
+			if err == nil {
+				results = append(results, found...)
+			}
+			mu.Unlock()
+
 			if err != nil {
 				log.Printf("Scan %s: %v", machine.Name, err)
-				return
-			}
-			if len(found) > 0 {
-				mu.Lock()
-				results = append(results, found...)
-				mu.Unlock()
 			}
 		}(m)
 	}
 
 	wg.Wait()
-	return results
+	return results, health
 }

@@ -81,9 +81,18 @@ type Model struct {
 	machines        []session.Machine
 	selectedMachine int
 
-	// Path suggestions
+	// Path suggestions. repoSearchSeq stamps every search the path input
+	// asks for: searches run concurrently, and a slow remote one would
+	// otherwise land after — and overwrite — a newer, faster one. Only
+	// results carrying the current sequence are taken.
 	pathSuggestions []string
 	selectedSugg    int
+	repoSearchSeq   int
+
+	// machineHealth is the reachability the last scan saw, refreshed on
+	// every discovery tick and manual fetch. It draws the markers in the
+	// machine picker and lets searchRepos skip machines that are down.
+	machineHealth map[string]session.Health
 
 	// Scan results
 	discovered   []session.DiscoveredSession
@@ -171,8 +180,21 @@ type switchedMsg struct{}
 // detachedMsg is sent after we've detached the tmux client.
 type detachedMsg struct{}
 
-// repoSearchMsg carries search results.
-type repoSearchMsg []string
+// repoSearchDelay is how long the path input has to sit quiet before a
+// search goes out — long enough that typing a path costs one search rather
+// than one per character, short enough not to feel laggy.
+const repoSearchDelay = 250 * time.Millisecond
+
+// repoSearchMsg carries search results, stamped with the sequence number of
+// the keystroke that asked for them.
+type repoSearchMsg struct {
+	seq   int
+	repos []string
+}
+
+// repoSearchDebounceMsg fires repoSearchDelay after a keystroke. Only the
+// last one of a burst still matches repoSearchSeq and actually searches.
+type repoSearchDebounceMsg int
 
 // promptSentMsg signals that the initial prompt was delivered to a session.
 type promptSentMsg struct {
@@ -341,8 +363,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.localWindowNames = set
 		return m, nil
 
+	case repoSearchDebounceMsg:
+		// Everything but the newest keystroke's timer has been superseded.
+		if int(msg) != m.repoSearchSeq {
+			return m, nil
+		}
+		return m, m.searchRepos(int(msg))
+
 	case repoSearchMsg:
-		m.pathSuggestions = msg
+		// Drop results the user has already typed past.
+		if msg.seq != m.repoSearchSeq {
+			return m, nil
+		}
+		m.pathSuggestions = msg.repos
 		m.selectedSugg = 0
 		return m, nil
 
@@ -370,6 +403,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.orphanedCount = count
 		m.lastDiscovery = time.Now()
+		m.machineHealth = m.manager.MachineHealth()
 		return m, nil
 
 	case discoveryTickMsg:
@@ -387,6 +421,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.discoveryRunning = false
 		m.lastDiscovery = msg.at
 		m.lastDiscoveryErr = msg.err
+		// Refreshed even on error: a scan that mostly failed is exactly
+		// when the picker's markers earn their keep.
+		m.machineHealth = m.manager.MachineHealth()
 		if msg.err != nil {
 			return m, nil
 		}
@@ -662,6 +699,9 @@ func (m Model) openNewSession(available []apps.App) (Model, tea.Cmd) {
 	m.pathInput.Reset()
 	m.pathSuggestions = nil
 	m.selectedSugg = 0
+	// Invalidate any search still in flight from a previous visit to the
+	// form, so its results can't land in this one.
+	m.repoSearchSeq++
 	m.selectedMachine = 0
 	m.selectedAgent = 0
 	m.newSessionApps = available
@@ -733,6 +773,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case fieldMachine:
 			if len(m.machines) > 0 && m.selectedMachine > 0 {
 				m.selectedMachine--
+				return m.machineChanged()
 			}
 			return m, nil
 		case fieldPath:
@@ -752,6 +793,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case fieldMachine:
 			if len(m.machines) > 0 && m.selectedMachine < len(m.machines)-1 {
 				m.selectedMachine++
+				return m.machineChanged()
 			}
 			return m, nil
 		case fieldPath:
@@ -784,7 +826,9 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model, cmd := m.updateInputs(msg)
 		m = model.(Model)
 		if m.pathInput.Value() != prevPath {
-			return m, tea.Batch(cmd, m.searchRepos)
+			var searchCmd tea.Cmd
+			m, searchCmd = m.queueRepoSearch()
+			return m, tea.Batch(cmd, searchCmd)
 		}
 		return m, cmd
 	}
@@ -803,7 +847,9 @@ func (m Model) focusNewInput() (Model, tea.Cmd) {
 		return m, textinput.Blink
 	case fieldPath:
 		m.pathInput.Focus()
-		return m, tea.Batch(textinput.Blink, m.searchRepos)
+		var searchCmd tea.Cmd
+		m, searchCmd = m.queueRepoSearch()
+		return m, tea.Batch(textinput.Blink, searchCmd)
 	}
 	return m, nil
 }
@@ -1130,11 +1176,16 @@ func (m Model) viewNewSession() string {
 		if mach.HostName != "" && mach.HostName != "localhost" {
 			machLine += "  " + dimStyle().Render(mach.HostName)
 		}
-		machineLines = append(machineLines, style.Render(prefix+machLine))
+		// The marker is rendered outside the row's own style so its colour
+		// survives: nesting it would let its reset code close the row's.
+		marker, markerStyle := healthMarker(m.machineHealth[mach.Name])
+		machineLines = append(machineLines,
+			style.Render(prefix)+markerStyle.Render(marker)+" "+style.Render(machLine))
 	}
 	formParts = append(formParts,
 		label("Machine:  [↑↓ to select]", m.focusedInput == fieldMachine),
 		strings.Join(machineLines, "\n"),
+		dimStyle().Render("  ● online   ○ unreachable   ⨯ auth failed   · not probed"),
 		"",
 	)
 
@@ -1438,7 +1489,10 @@ func (m Model) refreshLocalWindows() tea.Msg {
 	return localWindowsMsg(names)
 }
 
-func (m Model) searchRepos() tea.Msg {
+// searchRepos builds the command that looks up path suggestions for the
+// selected machine. Everything the search needs is read here, on the event
+// loop, so the goroutine the command runs on never touches the model.
+func (m Model) searchRepos(seq int) tea.Cmd {
 	query := strings.TrimSpace(m.pathInput.Value())
 	machine := ""
 	if m.selectedMachine < len(m.machines) {
@@ -1446,14 +1500,46 @@ func (m Model) searchRepos() tea.Msg {
 	}
 
 	if machine == "" || machine == "home" {
-		repos := session.FindRepos(m.manager.LocalRepoPaths(), query)
-		return repoSearchMsg(repos)
+		paths := m.manager.LocalRepoPaths()
+		return func() tea.Msg {
+			return repoSearchMsg{seq: seq, repos: session.FindRepos(paths, query)}
+		}
+	}
+
+	// A machine the last scan could not reach will not answer this either;
+	// going out anyway buys nothing but a timeout's wait for an empty list.
+	// Unprobed machines (absent from the map) still get tried.
+	if h, ok := m.machineHealth[machine]; ok && h != session.HealthOnline {
+		return func() tea.Msg { return repoSearchMsg{seq: seq} }
 	}
 
 	// Remote search
 	remotePath := m.manager.Config().RemoteBaseFor(machine)
-	repos := session.FindRemoteRepos(machine, remotePath, query)
-	return repoSearchMsg(repos)
+	timeout := m.manager.Config().ScanTimeout
+	return func() tea.Msg {
+		repos := session.FindRemoteRepos(machine, remotePath, query, timeout)
+		return repoSearchMsg{seq: seq, repos: repos}
+	}
+}
+
+// machineChanged drops suggestions belonging to the machine the user just
+// moved off and queues a search against the new one. Returns tea.Model so it
+// can be returned straight out of the key handlers.
+func (m Model) machineChanged() (tea.Model, tea.Cmd) {
+	m.pathSuggestions = nil
+	m.selectedSugg = 0
+	m, cmd := m.queueRepoSearch()
+	return m, cmd
+}
+
+// queueRepoSearch invalidates any search in flight and schedules a fresh one
+// for once the user stops typing.
+func (m Model) queueRepoSearch() (Model, tea.Cmd) {
+	m.repoSearchSeq++
+	seq := m.repoSearchSeq
+	return m, tea.Tick(repoSearchDelay, func(time.Time) tea.Msg {
+		return repoSearchDebounceMsg(seq)
+	})
 }
 
 func (m Model) tickCmd() tea.Cmd {
@@ -1481,7 +1567,7 @@ func (m Model) discoveryTickCmd() tea.Cmd {
 // Runs on a goroutine via tea.Cmd. SSH timeouts are bounded by
 // cfg.ScanTimeout (parallel across machines).
 func (m Model) runDiscovery() tea.Msg {
-	all, err := m.manager.FetchAll()
+	all, err := m.manager.FetchAllThrottled()
 	if err != nil {
 		log.Printf("background discovery: %v", err)
 		return discoveryResultMsg{err: err, at: time.Now()}
@@ -1547,6 +1633,20 @@ func (m Model) runKill(name string) tea.Cmd {
 		}
 		return killedMsg(name)
 	}
+}
+
+// healthMarker maps a machine's last-known reachability to the dot drawn
+// beside it in the picker, and the colour to draw it in.
+func healthMarker(h session.Health) (string, lipgloss.Style) {
+	switch h {
+	case session.HealthOnline:
+		return "●", lipgloss.NewStyle().Foreground(successColor)
+	case session.HealthOffline:
+		return "○", lipgloss.NewStyle().Foreground(errorColor)
+	case session.HealthDenied:
+		return "⨯", lipgloss.NewStyle().Foreground(warningColor)
+	}
+	return "·", dimStyle()
 }
 
 func dimStyle() lipgloss.Style {

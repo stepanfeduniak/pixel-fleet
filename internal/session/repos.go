@@ -1,11 +1,13 @@
 package session
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FindRepos searches for git repositories under the given base paths.
@@ -75,16 +77,32 @@ func FindRepos(basePaths []string, query string) []string {
 }
 
 // FindRemoteRepos searches for git repos on a remote machine via SSH.
-func FindRemoteRepos(machine, basePath string, query string) []string {
+//
+// The SSH is bounded the same way the discovery probe is, and for a sharper
+// reason: this runs off the path input in the new-session form. Plain
+// `ssh host` against a machine that has dropped off the network sits in the
+// kernel's TCP retry for over a minute, so every keystroke used to leave
+// another wedged process behind. ConnectTimeout caps the handshake, the
+// context caps the whole call, and BatchMode stops ssh trying to prompt for
+// a password on a terminal the dashboard is busy drawing to.
+func FindRemoteRepos(machine, basePath, query string, timeout time.Duration) []string {
 	if basePath == "" {
 		basePath = "~"
 	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	// Use find via SSH to locate .git directories (max depth 3).
 	// `find` exits non-zero on any unreadable dir even with 2>/dev/null,
 	// so we treat captured stdout as truth and only bail when there's
 	// nothing at all (real SSH/connection failure).
-	cmd := exec.Command("ssh", machine, "find", basePath,
+	cmd := exec.CommandContext(ctx, "ssh",
+		"-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine,
+		"find", basePath,
 		"-maxdepth", "4", "-name", ".git", "-type", "d",
 		"2>/dev/null")
 	out, err := cmd.Output()

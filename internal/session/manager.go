@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
@@ -59,11 +60,41 @@ func randomShortID() string {
 type Manager struct {
 	cfg   *config.Config
 	store *Store
+
+	// Reachability from the most recent scan. Scans run on background
+	// goroutines while the dashboard reads this from its event loop to
+	// draw the machine picker, hence the lock.
+	healthMu sync.RWMutex
+	health   map[string]Health
+
+	// Backs off machines that keep failing, so the recurring scan stops
+	// paying a full timeout for hosts that are not there.
+	throttle *ProbeThrottle
 }
 
 // NewManager creates a new session manager.
 func NewManager(cfg *config.Config) *Manager {
-	return &Manager{cfg: cfg, store: NewStore()}
+	return &Manager{cfg: cfg, store: NewStore(), throttle: NewProbeThrottle()}
+}
+
+// recordHealth stores the reachability a scan just observed.
+func (m *Manager) recordHealth(h map[string]Health) {
+	m.healthMu.Lock()
+	m.health = h
+	m.healthMu.Unlock()
+}
+
+// MachineHealth returns the reachability seen by the most recent scan.
+// Machines not probed yet are absent, which reads as HealthUnknown.
+func (m *Manager) MachineHealth() map[string]Health {
+	m.healthMu.RLock()
+	defer m.healthMu.RUnlock()
+
+	out := make(map[string]Health, len(m.health))
+	for name, h := range m.health {
+		out[name] = h
+	}
+	return out
 }
 
 // EnsureSession ensures the tmux session exists.
@@ -545,7 +576,22 @@ func (m *Manager) Config() *config.Config {
 // FetchAll discovers ALL cs-managed sessions across all known machines.
 // Unlike Scan (which only returns orphans), FetchAll returns everything
 // and marks each session as tracked or orphaned relative to the local store.
+//
+// Every machine is probed, backoff or not: a user who asks for a fetch is
+// asking to stop trusting the cache. Background callers want
+// FetchAllThrottled instead.
 func (m *Manager) FetchAll() ([]DiscoveredSession, error) {
+	return m.fetchAll(nil)
+}
+
+// FetchAllThrottled is FetchAll for the recurring background scan: machines
+// that keep failing are skipped for a while rather than costing a full
+// ScanTimeout every cycle.
+func (m *Manager) FetchAllThrottled() ([]DiscoveredSession, error) {
+	return m.fetchAll(m.throttle)
+}
+
+func (m *Manager) fetchAll(throttle *ProbeThrottle) ([]DiscoveredSession, error) {
 	machines := ListMachines()
 
 	// Build lookup of locally tracked sessions for tagging.
@@ -560,7 +606,8 @@ func (m *Manager) FetchAll() ([]DiscoveredSession, error) {
 		}
 	}
 
-	all := ScanAll(machines, m.cfg.ScanTimeout)
+	all, health := ScanAll(machines, m.cfg.ScanTimeout, throttle)
+	m.recordHealth(health)
 
 	var results []DiscoveredSession
 	for _, d := range all {
@@ -626,7 +673,8 @@ func (m *Manager) Scan() ([]DiscoveredSession, error) {
 		knownWindows[pair{rec.Machine, w}] = true
 	}
 
-	all := ScanAll(machines, m.cfg.ScanTimeout)
+	all, health := ScanAll(machines, m.cfg.ScanTimeout, nil)
+	m.recordHealth(health)
 
 	var orphaned []DiscoveredSession
 	for _, d := range all {
