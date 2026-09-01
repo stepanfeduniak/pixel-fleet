@@ -339,6 +339,20 @@ func attach(sessionName string) {
 }
 
 func cmdRunTUI(mgr *session.Manager, cfg *config.Config) {
+	// Reapply the session options and clipboard bindings here too, not just
+	// on the `cs` entry point that creates the session.
+	//
+	// The dashboard is the process that actually runs for days and gets
+	// restarted in place (tmux respawn-pane) after an upgrade, while the
+	// tmux server outlives all of it. Without this, anything that clears a
+	// binding or the pane-set-clipboard hook — a config reload, an option
+	// reset, a server that predates the feature — stays broken until the
+	// user happens to run bare `cs` or create a session, and restarting the
+	// dashboard, the obvious thing to try, fixes nothing.
+	if err := tmux.ApplySessionOptions(cfg.SessionName); err != nil {
+		log.Printf("session options: %v", err)
+	}
+
 	if err := tui.Run(mgr, cfg.SessionName, cfg.RefreshInterval, cfg.DiscoveryInterval); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)

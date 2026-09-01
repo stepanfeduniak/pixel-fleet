@@ -160,3 +160,27 @@ func TestProbeBridgeLinesAreSilent(t *testing.T) {
 		t.Errorf("probe script was altered, not prefixed:\n%s", got)
 	}
 }
+
+// terminal-features is set with `-a`, which appends. The scan reapplies the
+// bridge to every machine on an interval, so an unconditional append adds
+// another copy of the entry every cycle and the option grows for as long as
+// the remote tmux server lives — a real host was found holding 150 copies,
+// climbing by one a minute. The line must read the current value first.
+func TestTerminalFeaturesAppendIsGuarded(t *testing.T) {
+	var line string
+	for _, l := range strings.Split(clipboardBridgeSnippet, "\n") {
+		if strings.Contains(l, "terminal-features") {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatal("no terminal-features line in the bridge snippet")
+	}
+	if !strings.Contains(line, "show-options") {
+		t.Errorf("terminal-features is appended unconditionally, so every scan adds a duplicate:\n  %s", line)
+	}
+	if !strings.Contains(line, "-sa terminal-features") {
+		t.Errorf("expected the guarded line to still perform the append:\n  %s", line)
+	}
+}

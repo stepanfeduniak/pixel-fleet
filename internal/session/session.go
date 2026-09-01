@@ -215,6 +215,12 @@ func buildLocalCommand(opts BuildOpts) string {
 // TERM from the outer tmux pane, and not every terminfo entry advertises the
 // clipboard capability that gates the escape sequence.
 //
+// That one is guarded by a read first, because `-a` appends: the scan reaches
+// every machine on an interval and reapplies this snippet, so an unconditional
+// append adds another copy of the entry every cycle. Left alone it grows for
+// as long as the remote tmux server lives — one observed host had 139 copies.
+// internal/tmux.hasClipboardFeature is the local half of the same guard.
+//
 // The bindings are server-global - tmux has no per-session key tables - so
 // they also apply to any other tmux session on the remote host. All they do
 // is route copies through the clipboard, which is why that is acceptable.
@@ -228,7 +234,7 @@ func buildLocalCommand(opts BuildOpts) string {
 // these must not stop the session from launching.
 const clipboardBridgeSnippet = `
 tmux set-option -s set-clipboard on >/dev/null 2>&1 || true
-tmux set-option -sa terminal-features ',*:clipboard' >/dev/null 2>&1 || true
+tmux show-options -sv terminal-features 2>/dev/null | tr ',' '\n' | grep -qx '\*:clipboard' || tmux set-option -sa terminal-features ',*:clipboard' >/dev/null 2>&1 || true
 tmux bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
 tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
 tmux bind-key -T copy-mode    Enter send-keys -X copy-pipe-and-cancel >/dev/null 2>&1 || true
