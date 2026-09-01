@@ -18,10 +18,19 @@ fi
 cd "$SCRIPT_DIR"
 "$GO_BIN" build -o cs .
 
-# Install
+# Install.
+#
+# Write to a temp file and rename, never cp over the target. `cp` rewrites
+# the existing inode in place, and if a cs dashboard is currently running
+# from that path (it usually is) macOS ends up with a binary whose contents
+# no longer match its ad-hoc code signature — every later exec dies with
+# SIGKILL. `mv` within the same filesystem is an atomic rename: it swaps in
+# a fresh inode, so the new binary is intact and already-running dashboards
+# keep the old one until they restart.
 mkdir -p "$INSTALL_DIR"
-cp cs "$INSTALL_DIR/cs"
-chmod +x "$INSTALL_DIR/cs"
+cp cs "$INSTALL_DIR/.cs.new"
+chmod +x "$INSTALL_DIR/.cs.new"
+mv -f "$INSTALL_DIR/.cs.new" "$INSTALL_DIR/cs"
 
 echo "Installed cs to ${INSTALL_DIR}/cs"
 
