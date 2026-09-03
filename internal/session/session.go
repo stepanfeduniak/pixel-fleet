@@ -10,8 +10,24 @@ import (
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 )
 
-// sshOpts are the SSH options used for all remote sessions.
-const sshOpts = "-t -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+// sshOpts are the SSH options used for all remote sessions — the long-lived
+// interactive attach, not the short control commands in sshopts.go. These
+// deliberately do not multiplex: a shared master would put every session on
+// one host behind a single TCP connection, so one blip would drop all of
+// them at once instead of one, and wrapWithReconnect already recovers a
+// dropped session without losing state.
+//
+// The keepalive is what decides how long a frozen pane stays frozen after
+// the link dies. At 15s x 3 that was 45 seconds of a session that looks
+// hung before the reconnect loop got control. 5s x 4 notices in ~20s while
+// still tolerating four consecutive missed replies, which matters on a
+// jittery link where round-trips can spike near a second.
+//
+// ConnectTimeout matters just as much and was missing. Without it a
+// reconnect attempt against a host that is still down waits out the
+// kernel's ~2-minute SYN timeout, so the pane sat dead far longer than the
+// loop's own 2s retry suggested.
+const sshOpts = "-t -o ServerAliveInterval=5 -o ServerAliveCountMax=4 -o ConnectTimeout=12"
 
 // clipboardEnabled mirrors the `clipboard` config option. Enforcing the
 // remote clipboard bridge happens on paths that have no *config.Config in

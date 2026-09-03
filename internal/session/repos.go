@@ -100,11 +100,10 @@ func FindRemoteRepos(machine, basePath, query string, timeout time.Duration) []s
 	// `find` exits non-zero on any unreadable dir even with 2>/dev/null,
 	// so we treat captured stdout as truth and only bail when there's
 	// nothing at all (real SSH/connection failure).
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine,
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs(machine,
 		"find", basePath,
 		"-maxdepth", "4", "-name", ".git", "-type", "d",
-		"2>/dev/null")
+		"2>/dev/null")...)
 	out, err := cmd.Output()
 	if err != nil && len(out) == 0 {
 		return nil

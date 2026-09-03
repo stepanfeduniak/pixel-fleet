@@ -139,4 +139,34 @@ remote_codex_bin: codex
 clipboard: true                  # copy/paste + URL bindings (docs/clipboard.md)
 refresh_interval: 2s
 discovery_interval: 60s          # set to -1s to disable orphan auto-scan
+connect_timeout: 12s             # cap on the TCP connect + SSH handshake
+scan_timeout: 20s                # cap on one machine's whole discovery probe
 ```
+
+### Tuning for a slow or lossy network
+
+`connect_timeout` and `scan_timeout` are the two that matter when the link
+is bad, and they are easy to get wrong in a way that looks like broken
+machines rather than a broken network.
+
+A cold SSH handshake on congested 2.4GHz wifi measures 3-5 seconds. If
+`connect_timeout` is shorter than that, a host that is up and answering
+loses the race with its own timeout, gets marked offline, and is then
+pushed into a multi-minute backoff — so the dashboard empties out while
+every machine in it is fine. If you see machines flapping between online
+and offline, raise `connect_timeout` before suspecting the hosts.
+
+`scan_timeout` has to leave room for the handshake plus the probe that
+follows it. cs raises it for you if you set it at or below
+`connect_timeout`, since that combination can only ever produce false
+offlines.
+
+On a fast LAN you can go the other way — `connect_timeout: 3s` makes a
+genuinely dead host drop out of the dashboard sooner.
+
+cs reuses one SSH connection per host for its background commands
+(`ControlMaster`), so only the first command after a gap pays the
+handshake. The sockets live at `~/.ssh/cs-*` and clean themselves up a few
+minutes after the last command. Interactive sessions are deliberately left
+off that shared connection, so a drop takes one session down rather than
+every session on the host.

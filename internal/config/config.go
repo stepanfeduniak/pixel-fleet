@@ -64,7 +64,15 @@ type Config struct {
 	// global default.
 	Machines    map[string]MachineConfig `yaml:"machines"`
 	SessionName string                   `yaml:"session_name"`
-	ScanTimeout time.Duration            `yaml:"scan_timeout"`
+	// ScanTimeout caps one machine's discovery probe end to end. It has to
+	// leave room for ConnectTimeout plus the probe itself, or a host that
+	// is merely slow gets killed mid-handshake and reported as offline.
+	ScanTimeout time.Duration `yaml:"scan_timeout"`
+	// ConnectTimeout caps the TCP connect and SSH handshake for every
+	// non-interactive command cs runs. Raise it on a high-latency or lossy
+	// link, where a cold handshake can take several seconds; lower it on a
+	// LAN if you want dead hosts to drop out of the dashboard sooner.
+	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 	// DiscoveryInterval controls how often the dashboard re-scans known
 	// machines in the background for orphaned cs sessions (alive on a
 	// remote, missing from the local store). Set to 0 to disable.
@@ -91,7 +99,8 @@ func DefaultConfig() *Config {
 		CodexBin:          "codex",
 		RemoteCodexBin:    "codex",
 		SessionName:       "cs",
-		ScanTimeout:       5 * time.Second,
+		ScanTimeout:       20 * time.Second,
+		ConnectTimeout:    12 * time.Second,
 		DiscoveryInterval: 60 * time.Second,
 		RemoteTmuxSession: "cs-remote",
 		Clipboard:         &enabled,
@@ -134,8 +143,12 @@ func Load() *Config {
 		cfg.RefreshInterval = 2 * time.Second
 	}
 	if cfg.ScanTimeout == 0 {
-		cfg.ScanTimeout = 5 * time.Second
+		cfg.ScanTimeout = 20 * time.Second
 	}
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = 12 * time.Second
+	}
+	cfg.reconcileTimeouts()
 	// DiscoveryInterval: 0 in YAML means "use default (60s)". Users who
 	// genuinely want to disable auto-discovery should set a negative value
 	// like -1s, which we preserve here as "off".
@@ -151,6 +164,21 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+// reconcileTimeouts keeps ScanTimeout above ConnectTimeout.
+//
+// A scan that expires before the handshake it is waiting on can only ever
+// report a false offline: the host answers, just not before its own caller
+// gives up. That then feeds ProbeThrottle, so a mis-set pair of timeouts
+// doesn't merely lose one scan, it backs the machine off for minutes.
+func (c *Config) reconcileTimeouts() {
+	if c.ConnectTimeout <= 0 {
+		c.ConnectTimeout = 12 * time.Second
+	}
+	if c.ScanTimeout <= c.ConnectTimeout {
+		c.ScanTimeout = c.ConnectTimeout + 8*time.Second
+	}
 }
 
 // IsClipboardEnabled returns whether cs should install its copy/URL tmux

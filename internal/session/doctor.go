@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
@@ -43,13 +44,31 @@ func Doctor(machine string) DoctorReport {
 	return doctorRemote(machine)
 }
 
-// DoctorAll runs Doctor against every known machine.
+// DoctorAll runs Doctor against every known machine, in parallel.
+//
+// Sequentially, the run costs the sum of every unreachable machine's
+// timeout — and doctor is precisely the command you reach for when the
+// network is bad, so it was slowest exactly when it was most wanted. A
+// fleet with seven dead hosts took over half a minute before printing
+// anything. Each machine's probe is independent and already bounded by its
+// own timeout, so the whole run now costs about as much as the slowest one.
+//
+// Results are written back by index rather than appended, so the report
+// order still matches ListMachines and does not shuffle with the network.
 func DoctorAll() []DoctorReport {
 	machines := ListMachines()
-	reports := make([]DoctorReport, 0, len(machines))
-	for _, m := range machines {
-		reports = append(reports, Doctor(m.Name))
+	reports := make([]DoctorReport, len(machines))
+
+	var wg sync.WaitGroup
+	for i, m := range machines {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			reports[i] = Doctor(name)
+		}(i, m.Name)
 	}
+	wg.Wait()
+
 	return reports
 }
 
@@ -141,8 +160,8 @@ func doctorRemote(machine string) DoctorReport {
 	}
 	probe := sb.String()
 
-	cmd := exec.Command("ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine, probe)
-	out, err := withTimeout(cmd, 10*time.Second)
+	cmd := exec.Command("ssh", sshArgs(machine, probe)...)
+	out, err := withTimeout(cmd, ConnectTimeout()+15*time.Second)
 	if err != nil {
 		r.Checks = append(r.Checks, CheckResult{
 			Name:   "ssh reachable",

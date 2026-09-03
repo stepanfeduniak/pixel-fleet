@@ -47,6 +47,9 @@ func main() {
 	// URL key bindings installed on the local tmux server.
 	tmux.ClipboardEnabled = cfg.IsClipboardEnabled()
 	session.SetClipboardEnabled(cfg.IsClipboardEnabled())
+	// Must be set before the first probe: every non-interactive SSH command
+	// reads it.
+	session.SetConnectTimeout(cfg.ConnectTimeout)
 	mgr := session.NewManager(cfg)
 
 	args := os.Args[1:]

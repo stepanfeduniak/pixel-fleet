@@ -154,6 +154,38 @@ func (p *ProbeThrottle) record(name string, h Health, now time.Time) {
 	st.nextTry = now.Add(delay)
 }
 
+// pardonSweep undoes the failure this scan recorded against each named
+// machine, and lets them be probed again on the next cycle.
+//
+// It exists because ProbeThrottle cannot, on its own, tell "this host is
+// down" from "my wifi just dropped a packet". Both look like a timeout. On
+// a weak link the second is common, and the consequence was bad: one bad
+// sweep marked every machine offline, and a few of them in a row escalated
+// the backoff to its 15 minute cap. The wifi would come back and the
+// dashboard would stay empty for a quarter of an hour, with every machine
+// in it up the whole time.
+//
+// The health each machine last showed is left alone — they really did fail
+// to answer, and the dashboard should say so — only the penalty is dropped.
+func (p *ProbeThrottle) pardonSweep(names []string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, name := range names {
+		st, ok := p.state[name]
+		if !ok {
+			continue
+		}
+		if st.failures > 0 {
+			st.failures--
+		}
+		st.nextTry = time.Time{}
+	}
+}
+
 // classifyProbe turns a probe failure into a Health. The distinction worth
 // drawing is "the machine is not there" against "the machine is there and
 // refused us" — the first is a stale ~/.ssh/config entry, the second is a
@@ -186,7 +218,7 @@ func ScanMachine(machine Machine, timeout time.Duration) ([]DiscoveredSession, e
 	if machine.Name == "home" {
 		cmd = exec.CommandContext(ctx, "bash", "-c", script)
 	} else {
-		cmd = exec.CommandContext(ctx, "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", machine.Name, script)
+		cmd = exec.CommandContext(ctx, "ssh", sshArgs(machine.Name, script)...)
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -256,12 +288,20 @@ func ScanAll(machines []Machine, timeout time.Duration, throttle *ProbeThrottle)
 		health  = make(map[string]Health, len(machines))
 	)
 
+	// Remote machines probed this sweep, and how many of them came back
+	// HealthOffline, so a link failure can be told from host failures.
+	var probedRemote []string
+	offlineRemote := 0
+
 	now := time.Now()
 	for _, m := range machines {
 		// Sequential, before any goroutine starts, so no lock is needed.
 		if skip, carried := throttle.skip(m.Name, now); skip {
 			health[m.Name] = carried
 			continue
+		}
+		if m.Name != "home" {
+			probedRemote = append(probedRemote, m.Name)
 		}
 
 		wg.Add(1)
@@ -273,6 +313,9 @@ func ScanAll(machines []Machine, timeout time.Duration, throttle *ProbeThrottle)
 
 			mu.Lock()
 			health[machine.Name] = h
+			if h == HealthOffline && machine.Name != "home" {
+				offlineRemote++
+			}
 			if err == nil {
 				results = append(results, found...)
 			}
@@ -285,5 +328,20 @@ func ScanAll(machines []Machine, timeout time.Duration, throttle *ProbeThrottle)
 	}
 
 	wg.Wait()
+
+	// Every remote machine timing out at once is far more likely to be this
+	// laptop's link than every host in the fleet dying in the same second,
+	// so don't let it escalate the per-host backoff. Two is the smallest
+	// number that makes the inference worth anything: with one machine
+	// probed, "it failed" and "everything failed" are the same event.
+	//
+	// HealthDenied deliberately does not count — a machine that refused our
+	// key answered us, which is a fact about that host and not about the
+	// network, and it should still back off.
+	if len(probedRemote) >= 2 && offlineRemote == len(probedRemote) {
+		log.Printf("Scan: all %d remote machines unreachable, treating as a local network fault", offlineRemote)
+		throttle.pardonSweep(probedRemote)
+	}
+
 	return results, health
 }

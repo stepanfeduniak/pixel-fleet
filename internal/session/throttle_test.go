@@ -84,3 +84,66 @@ func TestNilThrottleNeverSkips(t *testing.T) {
 		t.Error("a nil throttle skipped a machine")
 	}
 }
+
+// On a weak link a whole sweep can time out because of this laptop's wifi,
+// not because the fleet died. Without the pardon, a few such sweeps in a row
+// pushed every machine to the 15-minute cap and the dashboard stayed empty
+// long after the network came back.
+
+func TestPardonKeepsABlipFromEscalatingTheBackoff(t *testing.T) {
+	p := NewProbeThrottle()
+	start := time.Now()
+
+	// Three sweeps where the link, not the hosts, was the problem.
+	for i := 0; i < 3; i++ {
+		p.record("a", HealthOffline, start)
+		p.record("b", HealthOffline, start)
+		p.pardonSweep([]string{"a", "b"})
+	}
+
+	for _, name := range []string{"a", "b"} {
+		if skip, _ := p.skip(name, start); skip {
+			t.Errorf("%s is backed off after a pardoned sweep; it should be retried next cycle", name)
+		}
+		if got := p.state[name].failures; got != 0 {
+			t.Errorf("%s accumulated %d failures across pardoned sweeps, want 0", name, got)
+		}
+	}
+}
+
+// A pardon forgives one sweep, not the host's whole history: a machine that
+// is genuinely down still has to earn its backoff back.
+func TestPardonOnlyForgivesTheSweepItCovers(t *testing.T) {
+	p := NewProbeThrottle()
+	start := time.Now()
+
+	p.record("dead", HealthOffline, start) // failure 1, host really is down
+	p.record("dead", HealthOffline, start) // failure 2
+	p.pardonSweep([]string{"dead"})        // one sweep looked like a link fault
+
+	if got := p.state["dead"].failures; got != 1 {
+		t.Errorf("failures = %d, want 1 (two failures, one pardoned)", got)
+	}
+	p.record("dead", HealthOffline, start)
+	if skip, _ := p.skip("dead", start.Add(time.Second)); !skip {
+		t.Error("a still-dead host should back off again after the pardon")
+	}
+}
+
+func TestPardonLeavesReportedHealthAlone(t *testing.T) {
+	p := NewProbeThrottle()
+	p.record("a", HealthOffline, time.Now())
+	p.pardonSweep([]string{"a"})
+
+	if got := p.state["a"].health; got != HealthOffline {
+		t.Errorf("health = %v, want HealthOffline — the machine did fail to answer", got)
+	}
+}
+
+func TestPardonIgnoresUnknownMachines(t *testing.T) {
+	p := NewProbeThrottle()
+	p.pardonSweep([]string{"never-probed"}) // must not panic or invent state
+	if _, ok := p.state["never-probed"]; ok {
+		t.Error("pardon created state for a machine that was never probed")
+	}
+}
