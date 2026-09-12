@@ -180,7 +180,7 @@ func (s Store) Send(text string) error {
 		return err
 	}
 	if channel == "macos" {
-		return sendNative(text)
+		return s.sendNative(text, nil)
 	}
 	endpoint, err := s.Webhook()
 	if err != nil {
@@ -189,9 +189,20 @@ func (s Store) Send(text string) error {
 	return post(slackClient, endpoint, text)
 }
 
+func (s Store) SendWatches(watches []Watch) error {
+	channel, err := s.Channel()
+	if err != nil {
+		return err
+	}
+	if channel == "macos" {
+		return s.sendNative(message(watches), watches)
+	}
+	return s.Send(message(watches))
+}
+
 // Deliver holds the state lock through sending so disarm and send have a
 // defined order. A failed or ambiguous delivery remains armed for retry.
-func Deliver(state map[string]Watch, blocked bool, now time.Time, send func(string) error) {
+func Deliver(state map[string]Watch, blocked bool, now time.Time, send func([]Watch) error) {
 	if blocked {
 		return
 	}
@@ -207,7 +218,7 @@ func Deliver(state map[string]Watch, blocked bool, now time.Time, send func(stri
 	if len(ready) == 0 {
 		return
 	}
-	err := send(message(ready))
+	err := send(ready)
 	for _, w := range ready {
 		if err != nil {
 			delay := time.Minute

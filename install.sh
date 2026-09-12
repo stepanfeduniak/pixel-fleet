@@ -4,6 +4,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
 
+if [ "$(uname -s)" = Darwin ]; then
+    exec "$SCRIPT_DIR/macos/install.sh"
+fi
+
 echo "Building pixel-fleet (cs)..."
 
 # Find Go

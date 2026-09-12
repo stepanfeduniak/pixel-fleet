@@ -107,6 +107,8 @@ func main() {
 	}
 
 	switch args[0] {
+	case "focus":
+		cmdFocus(mgr, cfg, args[1:])
 	case "notify":
 		if err := cmdNotify(args[1:], cfg.SessionName); err != nil {
 			fmt.Fprintln(os.Stderr, err)

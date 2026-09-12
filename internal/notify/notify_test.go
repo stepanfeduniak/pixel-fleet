@@ -96,7 +96,8 @@ func TestBreakDigestAndAutomaticNextCycle(t *testing.T) {
 		state[name] = w
 	}
 	calls := 0
-	send := func(text string) error {
+	send := func(watches []Watch) error {
+		text := message(watches)
 		calls++
 		if !strings.Contains(text, "frontend") || !strings.Contains(text, "backend") {
 			t.Fatal("not a combined digest")
@@ -125,7 +126,7 @@ func TestBreakDigestAndAutomaticNextCycle(t *testing.T) {
 func TestResumedWorkCancelsQueuedHandoff(t *testing.T) {
 	w := Watch{Name: "work", Armed: true, SeenWorking: true, Pending: "ready"}
 	w.Observe("codex", session.StatusWorking, time.Now())
-	Deliver(map[string]Watch{"work": w}, false, time.Now(), func(string) error { t.Fatal("sent stale handoff"); return nil })
+	Deliver(map[string]Watch{"work": w}, false, time.Now(), func([]Watch) error { t.Fatal("sent stale handoff"); return nil })
 	if !w.Armed {
 		t.Fatal("must stay armed for next readiness")
 	}
@@ -136,7 +137,7 @@ func TestDeliveryFailurePersistsAndRetries(t *testing.T) {
 	now := time.Now()
 	err := s.Update(func(m map[string]Watch) error {
 		m["work"] = Watch{Name: "work", Armed: true, Pending: "ready"}
-		Deliver(m, false, now, func(string) error { return errors.New("offline") })
+		Deliver(m, false, now, func([]Watch) error { return errors.New("offline") })
 		return nil
 	})
 	if err != nil {
@@ -149,8 +150,8 @@ func TestDeliveryFailurePersistsAndRetries(t *testing.T) {
 	if !m["work"].Armed || m["work"].LastError != "offline" {
 		t.Fatal("retry state not persisted")
 	}
-	Deliver(m, false, now.Add(time.Second), func(string) error { t.Fatal("retried too soon"); return nil })
-	Deliver(m, false, now.Add(time.Minute), func(string) error { return nil })
+	Deliver(m, false, now.Add(time.Second), func([]Watch) error { t.Fatal("retried too soon"); return nil })
+	Deliver(m, false, now.Add(time.Minute), func([]Watch) error { return nil })
 	if !m["work"].Armed || m["work"].Pending != "" {
 		t.Fatal("retry did not clear pending event while staying enabled")
 	}
@@ -262,7 +263,7 @@ func TestRepeatedTransitionsNotifyWithoutRearming(t *testing.T) {
 	now := time.Now()
 	state := map[string]Watch{"work": {Name: "work", Armed: true}}
 	calls := 0
-	send := func(string) error { calls++; return nil }
+	send := func([]Watch) error { calls++; return nil }
 	for cycle, ready := range []session.Status{session.StatusIdle, session.StatusWaitingInput, session.StatusIdle} {
 		w := state["work"]
 		at := now.Add(time.Duration(cycle) * time.Minute)

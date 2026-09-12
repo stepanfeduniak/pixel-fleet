@@ -142,7 +142,7 @@ func (s Store) Run(tmuxSession string) error {
 				w.Observe(o.agent, o.status, now)
 				current[name] = w
 			}
-			Deliver(current, blocker.Load().Active(now), now, s.Send)
+			Deliver(current, blocker.Load().Active(now) || s.Paused(), now, s.SendWatches)
 			return nil
 		})
 		if err != nil {

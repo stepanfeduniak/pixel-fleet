@@ -2,6 +2,9 @@ package notify
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,32 +62,84 @@ func (s Store) Ready() error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("native notifications require macOS")
 	}
-	if _, err := os.Stat("/usr/bin/osascript"); err != nil {
-		return errors.New("macOS notification helper /usr/bin/osascript is unavailable")
+	if _, err := os.Stat(AppPath()); err != nil {
+		return errors.New("install Pixel Fleet.app with ./macos/install.sh")
 	}
 	return nil
 }
 
-// Message content is passed as argv, never interpolated into AppleScript.
-const notificationScript = `on run argv
- display notification (item 1 of argv) with title "Pixel Fleet"
-end run`
-
-func nativeCommand(ctx context.Context, text string) *exec.Cmd {
-	return exec.CommandContext(ctx, "/usr/bin/osascript", "-e", notificationScript, text)
+func AppPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Applications", "Pixel Fleet.app")
 }
 
-func sendNative(text string) error {
+func (s Store) Paused() bool {
+	_, err := os.Stat(filepath.Join(s.Dir, "notifications-paused"))
+	return err == nil
+}
+
+type NativeRequest struct {
+	ID        string `json:"id"`
+	Body      string `json:"body"`
+	Session   string `json:"session"`
+	CreatedAt string `json:"createdAt"`
+}
+
+func nativeRequest(text string, watches []Watch) NativeRequest {
+	req := NativeRequest{Body: strings.TrimPrefix(text, "Pixel Fleet — ready when you are\n\n")}
+	if len(watches) == 1 {
+		req.Session = watches[0].Name
+		req.CreatedAt = watches[0].CreatedAt.Format(time.RFC3339Nano)
+	}
+	return req
+}
+
+func (s Store) sendNative(text string, watches []Watch) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("native notifications require macOS")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	text = strings.TrimPrefix(text, "Pixel Fleet — ready when you are\n\n")
-	if err := nativeCommand(ctx, text).Run(); err != nil {
-		return fmt.Errorf("macOS notification failed; check notification permissions and try cs notify test")
+	if err := s.Ready(); err != nil {
+		return err
 	}
-	// AppleScript confirms submission only. Focus and notification settings
-	// can suppress presentation, which must be verified with a visible test.
-	return nil
+	inbox := filepath.Join(s.Dir, "app-inbox")
+	if err := os.MkdirAll(inbox, 0700); err != nil {
+		return err
+	}
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return err
+	}
+	req := nativeRequest(text, watches)
+	req.ID = hex.EncodeToString(id[:])
+	path := filepath.Join(inbox, req.ID)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".tmp", data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(path+".tmp", path+".json"); err != nil {
+		return err
+	}
+	defer os.Remove(path + ".json")
+	defer os.Remove(path + ".ack")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "/usr/bin/open", "-g", "-a", AppPath()).Run(); err != nil {
+		return errors.New("could not launch Pixel Fleet.app")
+	}
+	for {
+		if data, err := os.ReadFile(path + ".ack"); err == nil {
+			if string(data) == "ok" {
+				return nil
+			}
+			return fmt.Errorf("Pixel Fleet.app: %s", strings.TrimSpace(string(data)))
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("Pixel Fleet.app did not acknowledge notification; open the app and allow notifications")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

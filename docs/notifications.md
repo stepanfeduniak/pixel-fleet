@@ -8,36 +8,28 @@ Messages describe the session's apparent state; they do not claim that a task
 succeeded. They include the session name, machine, and optional Linear issue
 link. Terminal output and source code are not sent to Slack.
 
-## Native macOS notifications (default on Mac)
+## Native macOS app (default on Mac)
 
-No Slack account or webhook is needed. After installation, run:
+Run `./install.sh` to install **Pixel Fleet.app** and the `cs` command. Open
+Pixel Fleet from Applications and allow its notifications. In **System Settings
+→ Notifications → Pixel Fleet**, choose **Persistent / Alerts** and enable
+**Show in Notification Center**. This setting is controlled by macOS.
 
 ```sh
 cs notify test
+cs notify test 'your session name'
 ```
 
-A **Pixel Fleet** notification should appear in macOS Notification Center
-(the sidebar opened by clicking the date/time in the menu bar). If it does
-not appear, open **System Settings → Notifications**, enable notifications
-for the script runner (which may be listed as Script Editor), and check your
-Focus settings. Turn on **Show in Notification Center**. Choose **Persistent** (or **Alerts** on older macOS versions) so the popup
-stays visible until dismissed. Pixel Fleet cannot override this macOS setting.
+The app has its own icon and menu bar controls. A single-session notification
+opens that exact session in Terminal; a digest or a click during a break opens
+the dashboard. Old notifications for deleted/replaced sessions also open the
+dashboard. Script Editor is no longer involved.
 
-The test confirms submission to macOS, not that the OS displayed it. Verify
-this once before relying on it. Notifications use the built-in AppleScript
-helper; they may be grouped under its app identity, with **Pixel Fleet** as
-the title. This minimal version does not add click-to-open actions. Return
-to `cs` to continue; the optional Linear URL is also available in
-`cs notify status`.
+Use the menu bar to pause/resume notifications and optionally enable
+**Launch at login**. Pausing persists until resumed; quitting the app also
+pauses delivery so the watcher will not immediately relaunch it.
 
-To switch back to native notifications after configuring Slack:
-
-```sh
-cs notify setup macos
-```
-
-Apple's notification reference:
-<https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/DisplayNotifications.html>.
+See [macOS app setup and behavior](../macos/README.md).
 
 ## Slack (optional)
 

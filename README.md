@@ -56,7 +56,8 @@ restart, and takes a typed `break` to end early.
 ## Automatic agent notifications
 
 Agents automatically notify you when they switch from working to asking for
-input or idle. On Mac, notifications appear in Notification Center. They wait
+input or idle. On Mac, Pixel Fleet.app provides Notification Center handoffs, a menu bar,
+and optional launch at login. They wait
 until your coding blocker ends. An optional Linear issue link travels with
 the handoff.
 

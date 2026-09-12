@@ -1,16 +1,20 @@
 package notify
 
 import (
-	"context"
 	"runtime"
 	"testing"
+	"time"
 )
 
-func TestNativeMessageIsDataNotAppleScript(t *testing.T) {
-	text := "a\" & do shell script \"touch /tmp/should-not-exist\"\n$(something) `anything`"
-	cmd := nativeCommand(context.Background(), text)
-	if len(cmd.Args) != 4 || cmd.Args[2] != notificationScript || cmd.Args[3] != text {
-		t.Fatalf("message interpolated into command: %#v", cmd.Args)
+func TestNativeRequestPreservesExactTarget(t *testing.T) {
+	now := time.Now()
+	name := "agent's task; $(anything)"
+	req := nativeRequest("message", []Watch{{Name: name, CreatedAt: now}})
+	if req.Session != name || req.CreatedAt != now.Format(time.RFC3339Nano) {
+		t.Fatal("target identity lost")
+	}
+	if req := nativeRequest("digest", []Watch{{Name: "one"}, {Name: "two"}}); req.Session != "" {
+		t.Fatal("digest must open dashboard")
 	}
 }
 

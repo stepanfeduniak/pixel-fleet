@@ -25,7 +25,7 @@ func cmdNotify(args []string, tmuxSession string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Notifications: %s\nConfigured: %t\nWatcher running: %t\n", channel, s.Ready() == nil, s.Running())
+		fmt.Printf("Notifications: %s\nConfigured: %t\nWatcher running: %t\nPaused: %t\n", channel, s.Ready() == nil, s.Running(), s.Paused())
 		names := make([]string, 0, len(state))
 		for name := range state {
 			names = append(names, name)
@@ -58,6 +58,8 @@ func cmdNotify(args []string, tmuxSession string) error {
 		return nil
 	}
 	switch args[0] {
+	case "start":
+		return s.EnsureWorker(tmuxSession)
 	case "setup":
 		if len(args) == 2 && args[1] == "macos" {
 			if err := s.SetChannel("macos"); err != nil {
@@ -103,15 +105,26 @@ func cmdNotify(args []string, tmuxSession string) error {
 		fmt.Println("Slack configured. Run cs notify test to send a test message.")
 		return nil
 	case "test":
+		if s.Paused() {
+			return fmt.Errorf("notifications are paused; resume them from the Pixel Fleet menu bar")
+		}
 		if blocker.Load().Active(time.Now()) {
 			return fmt.Errorf("break is active; run the notification test after it ends")
 		}
-		if err := s.Send("Pixel Fleet is connected. Agents automatically notify you when they stop working and need your input."); err != nil {
+		if len(args) > 1 {
+			rec, ok := session.NewStore().Lookup(args[1])
+			if !ok {
+				return fmt.Errorf("unknown session %q", args[1])
+			}
+			if err := s.SendWatches([]notify.Watch{{Name: rec.Name, Machine: rec.Machine, CreatedAt: rec.CreatedAt, Pending: "is ready for a notification test — choose Open session"}}); err != nil {
+				return err
+			}
+		} else if err := s.Send("Pixel Fleet is connected. Agents automatically notify you when they stop working and need your input."); err != nil {
 			return err
 		}
 		channel, _ := s.Channel()
 		if channel == "macos" {
-			fmt.Println("Test submitted to macOS. Check Notification Center; if missing, allow notifications for the script runner in System Settings > Notifications and check Focus.")
+			fmt.Println("Test submitted by Pixel Fleet.app. Choose Pixel Fleet → Persistent in System Settings > Notifications to keep it visible.")
 		} else {
 			fmt.Println("Test message delivered to Slack.")
 		}
