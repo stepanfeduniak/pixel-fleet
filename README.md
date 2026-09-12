@@ -53,6 +53,15 @@ restart, and takes a typed `break` to end early.
 
 **[docs/blocker.md](docs/blocker.md)**
 
+## Automatic agent notifications
+
+Agents automatically notify you when they switch from working to asking for
+input or idle. On Mac, notifications appear in Notification Center. They wait
+until your coding blocker ends. An optional Linear issue link travels with
+the handoff.
+
+**[Set up notifications](docs/notifications.md)**
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

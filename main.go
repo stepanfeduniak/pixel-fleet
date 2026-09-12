@@ -14,6 +14,7 @@ import (
 	_ "github.com/stepanfeduniak/pixel-fleet/internal/apps/builtin"
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps/skillsviewer"
 	"github.com/stepanfeduniak/pixel-fleet/internal/config"
+	"github.com/stepanfeduniak/pixel-fleet/internal/notify"
 	"github.com/stepanfeduniak/pixel-fleet/internal/session"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tmux"
 	"github.com/stepanfeduniak/pixel-fleet/internal/tui"
@@ -53,6 +54,22 @@ func main() {
 	mgr := session.NewManager(cfg)
 
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "--notify-worker" {
+		target := cfg.SessionName
+		if len(args) > 1 {
+			target = args[1]
+		}
+		if err := notify.DefaultStore().Run(target); err != nil {
+			log.Printf("notification worker: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(args) == 0 || args[0] == "--dashboard-tui" {
+		if err := notify.DefaultStore().EnsureWorker(cfg.SessionName); err != nil {
+			log.Printf("notifications: %v", err)
+		}
+	}
 
 	if len(args) == 0 {
 		cmdDashboard(mgr, cfg)
@@ -90,6 +107,11 @@ func main() {
 	}
 
 	switch args[0] {
+	case "notify":
+		if err := cmdNotify(args[1:], cfg.SessionName); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "ls", "list":
 		cmdList(mgr)
 	case "scan":
@@ -539,6 +561,7 @@ Usage:
   cs kill <name>                             Kill a session by name
   cs kill-all                                Kill all sessions
   cs urls [--copy]                           List URLs on this pane (menu, or copy newest)
+  cs notify                                  Notification status and setup
   cs help                                    Show this help`, appLines.String())
 	fmt.Print(`
 
