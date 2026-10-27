@@ -871,7 +871,24 @@ func (m Model) tryCreateSession() (Model, tea.Cmd) {
 	if app, ok := apps.Lookup(agent); ok {
 		pathRequired = m.manager.Config().RequiresPathFor(app.Name(), app.RequiresPath())
 	}
+	// Say why nothing happened. Returning silently here is what made an
+	// unreachable machine look like a dead key: cs skips the remote repo
+	// search for a machine the last scan could not reach, so the path
+	// suggestions come back empty, and pressing enter then did nothing at
+	// all — no message, no log line, no clue that a path was what was
+	// missing.
 	if name == "" || machine == "" || (pathRequired && path == "") {
+		switch {
+		case name == "":
+			m.err = fmt.Errorf("give the session a name")
+		case machine == "":
+			m.err = fmt.Errorf("pick a machine")
+		default:
+			m.err = fmt.Errorf("%s needs a path — type one if the list is empty "+
+				"(it stays empty while %s is marked unreachable)", agent, machine)
+		}
+		log.Printf("Create refused: name=%q machine=%q path=%q pathRequired=%v",
+			name, machine, path, pathRequired)
 		return m, nil
 	}
 

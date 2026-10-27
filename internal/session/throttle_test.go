@@ -22,9 +22,9 @@ func TestBackoffDoublesWithConsecutiveFailures(t *testing.T) {
 		1 * time.Minute,
 		2 * time.Minute,
 		4 * time.Minute,
-		8 * time.Minute,
-		15 * time.Minute, // capped
-		15 * time.Minute,
+		5 * time.Minute, // capped
+		5 * time.Minute,
+		5 * time.Minute,
 	}
 	for i, d := range want {
 		p.record("dead", HealthOffline, start)
@@ -145,5 +145,44 @@ func TestPardonIgnoresUnknownMachines(t *testing.T) {
 	p.pardonSweep([]string{"never-probed"}) // must not panic or invent state
 	if _, ok := p.state["never-probed"]; ok {
 		t.Error("pardon created state for a machine that was never probed")
+	}
+}
+
+// A user-initiated fetch bypasses the throttle, but bypassing is not
+// forgetting: the stored history survived and the next background tick
+// carried the stale Health forward, undoing what the manual scan learned.
+// That kept a recovered machine marked unreachable, which in turn made the
+// new-session form skip its repo search and refuse to create anything.
+func TestResetClearsHistorySoTheNextScanProbesEverything(t *testing.T) {
+	p := NewProbeThrottle()
+	start := time.Now()
+
+	for i := 0; i < 4; i++ {
+		p.record("gpu-01", HealthOffline, start)
+	}
+	if skip, _ := p.skip("gpu-01", start.Add(time.Second)); !skip {
+		t.Fatal("precondition: the machine should be backed off")
+	}
+
+	p.Reset()
+
+	if skip, carried := p.skip("gpu-01", start.Add(time.Second)); skip {
+		t.Errorf("still backed off after Reset (carried %v)", carried)
+	}
+	if _, ok := p.state["gpu-01"]; ok {
+		t.Error("Reset left failure history behind")
+	}
+}
+
+func TestResetOnNilThrottleIsSafe(t *testing.T) {
+	var p *ProbeThrottle
+	p.Reset() // the manual-fetch path may hold no throttle at all
+}
+
+func TestBackoffCapIsShortEnoughForAnInteractiveDashboard(t *testing.T) {
+	// A stale unreachable mark blocks the new-session form's repo search,
+	// so a long cap is not merely a slow refresh — it blocks real work.
+	if probeBackoffMax > 5*time.Minute {
+		t.Errorf("probeBackoffMax is %v; too long to leave a recovered machine marked down", probeBackoffMax)
 	}
 }

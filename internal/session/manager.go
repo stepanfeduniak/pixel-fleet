@@ -578,6 +578,11 @@ func (m *Manager) Config() *config.Config {
 // asking to stop trusting the cache. Background callers want
 // FetchAllThrottled instead.
 func (m *Manager) FetchAll() ([]DiscoveredSession, error) {
+	// Clear the backoff as well as bypassing it. Skipping the throttle only
+	// affects this scan; the stored failure history would otherwise still be
+	// there on the next background tick, which carries the stale Health
+	// forward and undoes everything this scan just learned.
+	m.throttle.Reset()
 	return m.fetchAll(nil)
 }
 

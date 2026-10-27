@@ -73,7 +73,7 @@ const (
 	// probeBackoffBase is the wait after a machine's first failed probe, and
 	// doubles with each consecutive failure up to probeBackoffMax.
 	probeBackoffBase = time.Minute
-	probeBackoffMax  = 15 * time.Minute
+	probeBackoffMax  = 5 * time.Minute
 
 	// probeMaxFailures clamps the doubling so the shift can't overflow.
 	probeMaxFailures = 10
@@ -184,6 +184,26 @@ func (p *ProbeThrottle) pardonSweep(names []string) {
 		}
 		st.nextTry = time.Time{}
 	}
+}
+
+// Reset forgets every machine's failure history, so the next scan probes
+// all of them.
+//
+// A user-initiated fetch calls this. Without it, the manual scan's own
+// results were correct but did not survive: FetchAll passes a nil throttle,
+// so nothing recorded the success, and the very next background tick found
+// the machine still inside its old backoff window, carried the stale
+// Health forward, and overwrote the good result. A machine that had come
+// back stayed marked unreachable — and because the new-session form skips
+// the remote repo search for an unreachable machine, that left the path
+// field empty and made session creation silently impossible.
+func (p *ProbeThrottle) Reset() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.state = make(map[string]*probeState)
 }
 
 // classifyProbe turns a probe failure into a Health. The distinction worth
