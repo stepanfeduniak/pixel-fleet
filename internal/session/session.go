@@ -426,16 +426,27 @@ func BuildReattachCommand(machine, tmuxSession, window string) string {
 //
 // Loop semantics:
 //   - ssh exits 0 (clean detach via Ctrl-b d): break, window closes normally.
-//   - ssh exits non-zero (network drop, broken pipe, signal): print a banner
-//     and reconnect after a short delay.
-//   - 5 consecutive fast failures (each <3s) likely indicate auth/host-key
-//     or remote-config errors that won't fix themselves; pause for Enter
-//     before retrying so the loop doesn't spin.
+//   - ssh exits non-zero (network drop, broken pipe, signal): reset the
+//     terminal, print a banner and reconnect after a delay that doubles
+//     from reconnectBaseDelay up to reconnectMaxDelay. A connection that
+//     held for reconnectHealthySecs counts as healthy and resets the delay.
+//   - Repeated fast failures (each <3s) usually mean auth/host-key or
+//     remote-config trouble, so the banner says so — but the loop keeps
+//     retrying on the capped backoff instead of stopping.
+//
+// The loop never blocks waiting for input. It used to pause for Enter after
+// "5 fast failures", and that pause is what made a network outage
+// permanent: the counter never reset, so after a long outage of slow
+// timeouts a single instant `Connection reset` tripped it; and ssh dying
+// mid-session leaves the pane in raw mode with mouse reporting on, so Enter
+// never reached the `read` and mouse movement printed as ^[[<35;…M junk.
+// The window stayed dead after the network came back until the pane was
+// respawned by hand.
 //
 // The returned snippet is a single shell program suitable for tmux
 // new-window's command argument (tmux passes it to /bin/sh -c verbatim).
 func wrapWithReconnect(sshCmd string) string {
-	return fmt.Sprintf(`attempts=0
+	return fmt.Sprintf(`fails=0
 while :; do
     start=$(date +%%s)
     %s
@@ -443,18 +454,44 @@ while :; do
     if [ "$ec" = "0" ]; then
         break
     fi
+    printf '%s'
+    stty sane 2>/dev/null
     duration=$(( $(date +%%s) - start ))
-    attempts=$(( attempts + 1 ))
-    printf '\n\033[33m[cs] viewer disconnected (ssh exit %%d after %%ds). Reconnecting (attempt %%d)...\033[0m\n' "$ec" "$duration" "$attempts"
-    if [ "$duration" -lt 3 ] && [ "$attempts" -ge 5 ]; then
-        printf '\033[31m[cs] 5 fast failures — likely an auth/config error. Press Enter to retry, Ctrl-C to close.\033[0m\n'
-        IFS= read -r _ || break
-        attempts=0
+    if [ "$duration" -ge %d ]; then
+        fails=0
     fi
-    sleep 2
+    fails=$(( fails + 1 ))
+    delay=%d
+    i=1
+    while [ "$i" -lt "$fails" ] && [ "$delay" -lt %d ]; do
+        delay=$(( delay * 2 ))
+        i=$(( i + 1 ))
+    done
+    if [ "$delay" -gt %d ]; then
+        delay=%d
+    fi
+    printf '\n\033[33m[cs] viewer disconnected (ssh exit %%d after %%ds). Reconnecting in %%ds (attempt %%d)...\033[0m\n' "$ec" "$duration" "$delay" "$fails"
+    if [ "$duration" -lt 3 ] && [ "$fails" -ge 5 ]; then
+        printf '\033[31m[cs] ssh keeps failing immediately — if the network is fine, check auth/host keys. Still retrying; Ctrl-C to close.\033[0m\n'
+    fi
+    sleep "$delay"
 done
-`, sshCmd)
+`, sshCmd, terminalResetSeq, reconnectHealthySecs,
+		reconnectBaseDelay, reconnectMaxDelay, reconnectMaxDelay, reconnectMaxDelay)
 }
+
+// Reconnect backoff, in whole seconds because the loop runs in plain sh.
+// Variables rather than constants so tests can run the loop without sleeping.
+var (
+	reconnectBaseDelay   = 2
+	reconnectMaxDelay    = 30
+	reconnectHealthySecs = 60
+)
+
+// terminalResetSeq undoes the modes a remote tmux turns on and leaves behind
+// when ssh dies without a clean exit: every mouse-reporting mode, bracketed
+// paste, and the alternate screen; it also shows the cursor again.
+const terminalResetSeq = `\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l\033[?2004l\033[?1049l\033[?25h`
 
 // ExpandHome expands ~ to the user's home directory (for local paths).
 func ExpandHome(path string) string {
