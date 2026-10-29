@@ -97,7 +97,7 @@ func TestReattachCommandInstallsBridge(t *testing.T) {
 	}
 	// Attaching must still be the last thing it does, and must be exec'd so
 	// tmux inherits the ssh TTY as stdin.
-	if !strings.Contains(got, "exec tmux attach -t cs-adopted-1234") {
+	if !strings.Contains(got, "tmux attach -t cs-adopted-1234") {
 		t.Errorf("reattach script does not attach:\n%s", got)
 	}
 }

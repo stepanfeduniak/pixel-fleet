@@ -70,3 +70,58 @@ func TestReconnectBackoffDoublesAndCaps(t *testing.T) {
 		t.Errorf("reconnect loop must never block on input:\n%s", prog)
 	}
 }
+
+// A detach exits ssh cleanly while the session keeps running. The loop must
+// reattach instead of closing the window, and only stop once the session
+// itself is gone (ssh exits 0).
+func TestReconnectReattachesAfterDetach(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "calls")
+	fakeSSH := fmt.Sprintf(`(echo x >> %s; [ "$(wc -l < %s)" -gt 1 ] || exit %d)`,
+		shellQuote(counter), shellQuote(counter), detachedExitCode)
+
+	out, err := exec.Command("sh", "-c", wrapWithReconnect(fakeSSH)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("loop exited with %v\n%s", err, out)
+	}
+	data, _ := os.ReadFile(counter)
+	if calls := strings.Count(string(data), "x"); calls != 2 {
+		t.Fatalf("ssh ran %d times, want 2 (detach then reattach)\n%s", calls, out)
+	}
+	if !strings.Contains(string(out), "still running. Reattaching") {
+		t.Errorf("expected the reattach banner\n%s", out)
+	}
+}
+
+// remoteAttach runs on the remote; a stub tmux stands in for the real one.
+// After the client returns, the script must exit detachedExitCode while the
+// session exists and 0 once it is gone.
+func TestRemoteAttachReportsDetachVersusEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hasStatus int
+		want      int
+	}{
+		{"detached", 0, detachedExitCode},
+		{"ended", 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			stub := fmt.Sprintf("#!/bin/sh\n[ \"$1\" = has-session ] && exit %d\nexit 0\n", tc.hasStatus)
+			if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", "set -e\n"+remoteAttach("cs-x"))
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+			err := cmd.Run()
+			got := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				got = ee.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("exit %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

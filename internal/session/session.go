@@ -369,14 +369,13 @@ tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true%s
 if [ "$SESSION_FRESH" = "1" ]; then
     sleep 0.5
 fi
-exec tmux attach -t "$SESSION"
-`, shellQuote(remoteSession), launchB64, clipboardSnippet)
+%s`, shellQuote(remoteSession), launchB64, clipboardSnippet, remoteAttach(`"$SESSION"`))
 
 	bootstrapB64 := base64.StdEncoding.EncodeToString([]byte(bootstrap))
 
 	// Outer SSH command. The remote shell decodes the bootstrap and passes
 	// it to `bash -c` as an argument (not via stdin). This matters because
-	// the bootstrap ends with `exec tmux attach`, and tmux attach requires
+	// the bootstrap ends with `tmux attach`, and tmux attach requires
 	// the process stdin to be a TTY. If we piped the script into `bash`,
 	// the bash process would inherit the pipe as stdin, so the exec'd
 	// tmux would also get the pipe — and fail with "not a terminal".
@@ -407,9 +406,9 @@ func BuildReattachCommand(machine, tmuxSession, window string) string {
 	// Reattaching to a session cs did not just launch still has to leave the
 	// remote tmux configured, or copying inside an adopted session would
 	// silently go nowhere. The script is base64'd for the same reason the
-	// launch bootstrap is: it contains quotes, and `exec tmux attach` needs
+	// launch bootstrap is: it contains quotes, and `tmux attach` needs
 	// the ssh TTY as its stdin.
-	script := fmt.Sprintf("exec tmux attach -t %s\n", target)
+	script := remoteAttach(target)
 	if ClipboardEnabled() {
 		script = strings.TrimPrefix(clipboardBridgeSnippet, "\n") + "\n" + script
 	}
@@ -419,13 +418,34 @@ func BuildReattachCommand(machine, tmuxSession, window string) string {
 	return wrapWithReconnect(sshCmd)
 }
 
+// detachedExitCode is what a remote attach exits with when its tmux client
+// was detached but the session is still running (EX_TEMPFAIL). ssh passes it
+// through, and the reconnect loop reattaches instead of closing the window.
+const detachedExitCode = 75
+
+// remoteAttach attaches to target and, once the client returns, tells a
+// detach apart from the session ending. Both make `tmux attach` exit 0, but
+// only the session ending should close the viewer window: a stray Ctrl-b
+// Ctrl-b d, or another client running `tmux detach-client`, used to leave a
+// dead pane in front of a session that was still working.
+func remoteAttach(target string) string {
+	return fmt.Sprintf(`tmux attach -t %[1]s || true
+if tmux has-session -t %[1]s 2>/dev/null; then
+    exit %[2]d
+fi
+`, target, detachedExitCode)
+}
+
 // wrapWithReconnect wraps an ssh-based command in a small shell loop that
 // reconnects on disconnect. The remote per-session tmux persists across SSH
 // drops (linger keeps the user scope alive), so a reconnect is just another
 // `tmux attach` to the same session — zero state loss.
 //
 // Loop semantics:
-//   - ssh exits 0 (clean detach via Ctrl-b d): break, window closes normally.
+//   - ssh exits 0 (the remote session ended or was killed): break, window
+//     closes normally.
+//   - ssh exits detachedExitCode (the remote client was detached but the
+//     session is still running): reattach after a second, without backoff.
 //   - ssh exits non-zero (network drop, broken pipe, signal): reset the
 //     terminal, print a banner and reconnect after a delay that doubles
 //     from reconnectBaseDelay up to reconnectMaxDelay. A connection that
@@ -456,6 +476,12 @@ while :; do
     fi
     printf '%s'
     stty sane 2>/dev/null
+    if [ "$ec" = "%d" ]; then
+        printf '\n\033[33m[cs] detached, but the session is still running. Reattaching...\033[0m\n'
+        fails=0
+        sleep 1
+        continue
+    fi
     duration=$(( $(date +%%s) - start ))
     if [ "$duration" -ge %d ]; then
         fails=0
@@ -476,7 +502,7 @@ while :; do
     fi
     sleep "$delay"
 done
-`, sshCmd, terminalResetSeq, reconnectHealthySecs,
+`, sshCmd, terminalResetSeq, detachedExitCode, reconnectHealthySecs,
 		reconnectBaseDelay, reconnectMaxDelay, reconnectMaxDelay, reconnectMaxDelay)
 }
 
