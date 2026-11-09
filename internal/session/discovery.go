@@ -23,6 +23,14 @@ type DiscoveredSession struct {
 	Reattachable bool
 	Tracked      bool   // true if this session is in the local store
 	DisplayName  string // local display name if tracked, otherwise empty
+	RemoteWindow string // tracking record's window to attach; empty = whole session
+}
+
+// isLaunchedSession reports whether a tmux session name is one cs created:
+// "cs-<slug>-<id>", one window per session. The old shared "cs-remote" also
+// starts with "cs-" but holds many windows, so it is excluded.
+func isLaunchedSession(name string) bool {
+	return strings.HasPrefix(name, "cs-") && name != legacySharedSession
 }
 
 // Label returns a human-readable label for display.
@@ -268,13 +276,10 @@ func parseScanOutput(machineName, output string) []DiscoveredSession {
 		command := parts[4]
 
 		// Include windows running an agent any registered app recognizes,
-		// OR any window in a cs-managed tmux session (legacy shared
-		// "cs-remote", or per-session "cs-<slug>-<id>"). The cs-managed
-		// check is needed because the foreground command might briefly be
-		// bash or a subprocess of the agent even though the session is
-		// one of ours.
-		isCsManaged := sessionName == "cs-remote" || strings.HasPrefix(sessionName, "cs-")
-		if !apps.AnyProcessMatches(command) && !isCsManaged {
+		// OR any window in a tmux session cs created (per-session "cs-*" or
+		// the old shared "cs-remote"): the foreground command there may be a
+		// shell or a subprocess even though the session is ours.
+		if !apps.AnyProcessMatches(command) && !strings.HasPrefix(sessionName, "cs-") {
 			continue
 		}
 

@@ -328,8 +328,8 @@ func (m *Manager) setArchived(name string, archived bool) error {
 }
 
 // Kill kills a session by name (supports partial match).
-// For remote sessions this also kills the corresponding window inside the
-// remote cs-remote tmux session so the Claude process actually stops.
+// For remote sessions this also kills the remote tmux so the agent actually
+// stops.
 // The lookup walks both the live local windows AND the persistent store so
 // sessions whose local viewer has been closed can still be killed.
 //
@@ -418,7 +418,7 @@ func (m *Manager) Kill(name string) error {
 		// Kill the remote tmux first (once per name, even if multiple
 		// duplicate local windows exist).
 		if t.hasRecord && t.record.Machine != "" && t.record.Machine != "home" {
-			if err := m.killRemoteForRecord(t.record); err != nil {
+			if err := m.killRemote(t.record); err != nil {
 				log.Printf("warning: remote kill failed for %s on %s: %v", t.windowName, t.record.Machine, err)
 			}
 		}
@@ -438,33 +438,18 @@ func (m *Manager) Kill(name string) error {
 	return nil
 }
 
-// killRemoteForRecord routes to the right tmux kill command based on which
-// fields the SessionRecord has populated:
-//
-//   - RemoteSession set (current model): tmux kill-session -t <RemoteSession>
-//   - RemoteWindow set (legacy unique-id model): tmux kill-window -t cs-remote:<RemoteWindow>
-//   - Neither set (oldest legacy model): tmux kill-window -t cs-remote:<Name>
-func (m *Manager) killRemoteForRecord(rec SessionRecord) error {
-	if rec.RemoteSession != "" {
-		return m.runRemoteTmux(rec.Machine, fmt.Sprintf("tmux kill-session -t %s", shellQuote(rec.RemoteSession)))
+// killRemote stops a record's remote tmux: the whole session, or just its
+// window when the record covers one window of a shared session.
+func (m *Manager) killRemote(rec SessionRecord) error {
+	kill := "kill-session"
+	if rec.RemoteWindow != "" {
+		kill = "kill-window"
 	}
-	legacySession := "cs-remote"
-	target := fmt.Sprintf("%s:%s", legacySession, rec.RemoteWindow)
-	if rec.RemoteWindow == "" {
-		target = fmt.Sprintf("%s:%s", legacySession, rec.Name)
-	}
-	return m.runRemoteTmux(rec.Machine, fmt.Sprintf("tmux kill-window -t %s", shellQuote(target)))
+	return m.runRemoteTmux(rec.Machine, fmt.Sprintf("tmux %s -t %s", kill, shellQuote(rec.RemoteTarget())))
 }
 
-// runRemoteTmux executes a tmux command on the given remote machine via SSH.
-//
-// Options come from sshControlOpts so this agrees with the discovery and
-// doctor probes: ConnectTimeout bounds the handshake so an unreachable host
-// fails in seconds instead of hanging on the kernel's ~2-minute SYN timeout
-// (without it, killing a session whose host is down blocked the caller —
-// and, in the TUI, the whole event loop — for minutes), BatchMode keeps a
-// missing key from prompting forever, and the shared master means this
-// usually reuses a connection the last scan already opened.
+// runRemoteTmux executes a tmux command on the given remote machine, over
+// the host's shared connection (see sshOptions).
 func (m *Manager) runRemoteTmux(machine, remoteCmd string) error {
 	cmd := exec.Command("ssh", sshArgs(machine, remoteCmd)...)
 	out, err := cmd.CombinedOutput()
@@ -594,114 +579,41 @@ func (m *Manager) FetchAllThrottled() ([]DiscoveredSession, error) {
 }
 
 func (m *Manager) fetchAll(throttle *ProbeThrottle) ([]DiscoveredSession, error) {
-	machines := ListMachines()
+	records := m.store.Load()
 
-	// Build lookup of locally tracked sessions for tagging.
-	type pair struct{ machine, ident string }
-	tracked := make(map[pair]string) // maps to display name
-	for _, rec := range m.store.Load() {
-		if rec.Machine == "" {
-			continue
-		}
-		if rec.RemoteSession != "" {
-			tracked[pair{rec.Machine, rec.RemoteSession}] = rec.Name
-		}
-	}
-
-	all, health := ScanAll(machines, m.cfg.ScanTimeout, throttle)
+	all, health := ScanAll(ListMachines(), m.cfg.ScanTimeout, throttle)
 	m.recordHealth(health)
 
 	var results []DiscoveredSession
 	for _, d := range all {
-		// Skip local cs dashboard windows
 		if d.Machine == "home" && d.TmuxSession == m.cfg.SessionName {
-			continue
+			continue // the local dashboard's own viewer windows
 		}
-		// Tag tracked sessions with their display name. Three cases:
-		//   1. Per-session model: tmux session is "cs-<slug>-<id>" — match
-		//      against records by RemoteSession.
-		//   2. Legacy shared cs-remote: match against records by RemoteWindow.
-		//   3. Arbitrary tmux session adopted by the user (e.g. someone ran
-		//      `tmux new -s claude` manually, then adopted it): same WindowName
-		//      match as legacy. Without this clause, adopted non-cs sessions
-		//      keep showing up as "orphaned" forever.
-		isPerSession := strings.HasPrefix(d.TmuxSession, "cs-") && d.TmuxSession != "cs-remote"
-		if isPerSession {
-			if name, ok := tracked[pair{d.Machine, d.TmuxSession}]; ok {
+		for _, rec := range records {
+			if rec.Matches(d) {
 				d.Tracked = true
-				d.DisplayName = name
-				d.Reattachable = true
-			}
-		} else {
-			if name, ok := tracked[pair{d.Machine, d.WindowName}]; ok {
-				d.Tracked = true
-				d.DisplayName = name
-				d.Reattachable = true
+				d.DisplayName = rec.Name
+				d.RemoteWindow = rec.RemoteWindow
+				break
 			}
 		}
 		results = append(results, d)
 	}
-
 	return results, nil
 }
 
-// Scan discovers orphaned Claude sessions across all known machines.
+// Scan discovers sessions on known machines that cs is not tracking.
 func (m *Manager) Scan() ([]DiscoveredSession, error) {
-	machines := ListMachines()
-
-	// Build sets of (machine, identifier) pairs that cs is already tracking,
-	// so we can filter them out of the orphan list. We use the persistent
-	// store as the source of truth — the local viewer may or may not exist,
-	// but if the store has the record, the session is ours.
-	//
-	// Two key spaces, one per supported model:
-	//   knownSessions: per-session model — (machine, RemoteSession)
-	//   knownWindows : legacy cs-remote model — (machine, RemoteWindow|Name)
-	type pair struct{ machine, ident string }
-	knownSessions := make(map[pair]bool)
-	knownWindows := make(map[pair]bool)
-	for _, rec := range m.store.Load() {
-		if rec.Machine == "" {
-			continue
-		}
-		if rec.RemoteSession != "" {
-			knownSessions[pair{rec.Machine, rec.RemoteSession}] = true
-			continue
-		}
-		w := rec.RemoteWindow
-		if w == "" {
-			w = rec.Name
-		}
-		knownWindows[pair{rec.Machine, w}] = true
+	all, err := m.FetchAll()
+	if err != nil {
+		return nil, err
 	}
-
-	all, health := ScanAll(machines, m.cfg.ScanTimeout, nil)
-	m.recordHealth(health)
-
 	var orphaned []DiscoveredSession
 	for _, d := range all {
-		if d.Machine == "home" && d.TmuxSession == m.cfg.SessionName {
-			continue // local cs windows
+		if !d.Tracked {
+			orphaned = append(orphaned, d)
 		}
-		// Three cases (mirrors FetchAll's tagging logic):
-		//   1. Per-session "cs-<slug>-<id>": match by RemoteSession.
-		//   2. Legacy "cs-remote": match by RemoteWindow.
-		//   3. Arbitrary adopted tmux session (e.g. user's manual `tmux new
-		//      -s foo`): also match by RemoteWindow, since Adopt stores
-		//      such records with rec.RemoteWindow set.
-		isPerSession := strings.HasPrefix(d.TmuxSession, "cs-") && d.TmuxSession != "cs-remote"
-		if isPerSession {
-			if knownSessions[pair{d.Machine, d.TmuxSession}] {
-				continue
-			}
-		} else {
-			if knownWindows[pair{d.Machine, d.WindowName}] {
-				continue
-			}
-		}
-		orphaned = append(orphaned, d)
 	}
-
 	return orphaned, nil
 }
 
@@ -711,23 +623,20 @@ func (m *Manager) Adopt(d DiscoveredSession, name string) (*Session, error) {
 		return nil, fmt.Errorf("failed to ensure tmux session: %w", err)
 	}
 
-	// For per-session adoptions (cs-<slug>-<id>) attach to the whole tmux
-	// session — there's only one window. For legacy cs-remote adoptions,
-	// keep the explicit window target so we land on the right pane.
-	var cmd string
+	// A session cs launched has exactly one window, so it is adopted whole.
+	// Anything else is adopted by window index, which tmux's automatic
+	// renaming cannot change underneath the record.
 	rec := SessionRecord{
-		Name:      name,
-		Machine:   d.Machine,
-		Path:      d.Path,
-		CreatedAt: time.Now(),
+		Name:          name,
+		Machine:       d.Machine,
+		Path:          d.Path,
+		RemoteSession: d.TmuxSession,
+		CreatedAt:     time.Now(),
 	}
-	if strings.HasPrefix(d.TmuxSession, "cs-") && d.TmuxSession != "cs-remote" {
-		cmd = BuildReattachCommand(d.Machine, d.TmuxSession, "")
-		rec.RemoteSession = d.TmuxSession
-	} else {
-		cmd = BuildReattachCommand(d.Machine, d.TmuxSession, d.WindowName)
-		rec.RemoteWindow = d.WindowName
+	if !isLaunchedSession(d.TmuxSession) {
+		rec.RemoteWindow = d.WindowIndex
 	}
+	cmd := BuildReattachCommand(rec.Machine, rec.RemoteSession, rec.RemoteWindow)
 	log.Printf("Adopt session: name=%s cmd=%s", name, cmd)
 
 	if err := tmux.NewWindow(m.cfg.SessionName, name, cmd); err != nil {

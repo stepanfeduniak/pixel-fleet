@@ -85,19 +85,18 @@ func TestRemoteBootstrapOmitsBridgeWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestReattachCommandInstallsBridge(t *testing.T) {
+// A reattach only attaches. The bridge is server-global and the discovery
+// scan — which is where every adopt and auto-restore comes from — reapplies
+// it each cycle, so repeating it on every reconnect is wasted round trips.
+func TestReattachOnlyAttaches(t *testing.T) {
 	SetClipboardEnabled(true)
 	t.Cleanup(func() { SetClipboardEnabled(true) })
 
-	cmd := BuildReattachCommand("gpu-01", "cs-adopted-1234", "")
-	got := decodeBootstrap(t, cmd)
-
-	if !strings.Contains(got, "set-option -s set-clipboard on") {
-		t.Errorf("reattach script has no clipboard bridge:\n%s", got)
+	got := decodeBootstrap(t, BuildReattachCommand("gpu-01", "cs-adopted-1234", ""))
+	if strings.Contains(got, "set-clipboard") {
+		t.Errorf("reattach reapplies the bridge:\n%s", got)
 	}
-	// Attaching must still be the last thing it does, and must be exec'd so
-	// tmux inherits the ssh TTY as stdin.
-	if !strings.Contains(got, "tmux attach -t cs-adopted-1234") {
+	if !strings.Contains(got, "tmux attach -t 'cs-adopted-1234'") {
 		t.Errorf("reattach script does not attach:\n%s", got)
 	}
 }
@@ -107,15 +106,6 @@ func TestReattachHomeIsUnchanged(t *testing.T) {
 	// stay the plain one-liner.
 	if got, want := BuildReattachCommand("home", "cs", "work"), "tmux attach -t cs:work"; got != want {
 		t.Errorf("BuildReattachCommand(home) = %q, want %q", got, want)
-	}
-}
-
-func TestReattachOmitsBridgeWhenDisabled(t *testing.T) {
-	SetClipboardEnabled(false)
-	t.Cleanup(func() { SetClipboardEnabled(true) })
-
-	if got := decodeBootstrap(t, BuildReattachCommand("gpu-01", "cs-x", "")); strings.Contains(got, "set-clipboard") {
-		t.Errorf("bridge present despite clipboard: false:\n%s", got)
 	}
 }
 

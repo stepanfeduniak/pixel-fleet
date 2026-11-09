@@ -156,7 +156,7 @@ type restoreTask struct {
 	Name        string
 	Machine     string
 	TmuxSession string
-	WindowName  string // empty for the per-session model; set for legacy/adopted
+	WindowName  string // empty attaches to the whole tmux session
 }
 
 // tickMsg triggers a refresh.
@@ -1595,22 +1595,17 @@ func (m Model) runDiscovery() tea.Msg {
 			result.orphanedCount++
 			continue
 		}
-		// Tracked-alive: build a restore task. Per-session model attaches
-		// to the whole tmux session; legacy/adopted attaches to a window.
-		// Archived sessions are included — auto-restore should rebuild a
+		// Tracked-alive: build a restore task, attaching to whatever the
+		// record tracks (the whole session, or one window of it). Archived sessions are included — auto-restore should rebuild a
 		// missing local viewer regardless of archive state. The duplicate
 		// prevention happens in the Update handler via localWindowNames
 		// (which sees the actual tmux state, not the filtered grid).
-		t := restoreTask{
+		result.trackedAlive = append(result.trackedAlive, restoreTask{
 			Name:        d.DisplayName,
 			Machine:     d.Machine,
 			TmuxSession: d.TmuxSession,
-		}
-		isPerSession := strings.HasPrefix(d.TmuxSession, "cs-") && d.TmuxSession != "cs-remote"
-		if !isPerSession {
-			t.WindowName = d.WindowName
-		}
-		result.trackedAlive = append(result.trackedAlive, t)
+			WindowName:  d.RemoteWindow,
+		})
 	}
 	return result
 }

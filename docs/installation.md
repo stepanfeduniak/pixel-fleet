@@ -131,7 +131,6 @@ Defaults are fine for most users. To override anything, create
 
 ```yaml
 session_name: cs                 # local tmux session name
-remote_tmux_session: cs-remote   # tmux session name on remote machines
 claude_bin: claude               # local agent binaries
 codex_bin: codex
 remote_claude_bin: claude        # remote agent binaries (PATH-resolved)
@@ -164,9 +163,9 @@ offlines.
 On a fast LAN you can go the other way — `connect_timeout: 3s` makes a
 genuinely dead host drop out of the dashboard sooner.
 
-cs reuses one SSH connection per host for its background commands
-(`ControlMaster`), so only the first command after a gap pays the
-handshake. The sockets live at `~/.ssh/cs-*` and clean themselves up a few
-minutes after the last command. Interactive sessions are deliberately left
-off that shared connection, so a drop takes one session down rather than
-every session on the host.
+cs keeps one SSH connection per host (`ControlMaster`) and sends
+everything over it: session panes, background scans, kills. Only the first
+command after a gap pays the handshake, and when the link drops, every pane
+on that host reconnects over one fresh handshake instead of one each. The
+sockets live at `~/.ssh/cs-*` and close a few minutes after the last pane
+detaches.

@@ -10,14 +10,12 @@ import (
 
 // SessionRecord is the persisted metadata for a session.
 //
-// RemoteSession is the dedicated tmux session name on the remote machine
-// for the current per-session model — each cs session gets its own tmux
-// session like `cs-<sanitized>-<8hex>`, fully isolated from any other.
-//
-// RemoteWindow is the legacy field from the previous shared-cs-remote
-// model where each cs session was a window inside a single `cs-remote`
-// tmux session. It's still read so that records created before the
-// per-session refactor can be killed and reattached correctly.
+// A remote session is identified by one tmux target: RemoteSession, plus
+// RemoteWindow when the record covers a single window rather than the whole
+// session. Sessions cs launches own a dedicated tmux session and leave
+// RemoteWindow empty; adopted ones name the window (by index, which survives
+// tmux's automatic renaming). Records from the old shared "cs-remote" model
+// are rewritten into this form on load — see normalize.
 type SessionRecord struct {
 	Name          string    `json:"name"`
 	RemoteSession string    `json:"remote_session,omitempty"`
@@ -56,7 +54,40 @@ func (s *Store) load() []SessionRecord {
 	if err := json.Unmarshal(data, &records); err != nil {
 		return nil
 	}
+	for i := range records {
+		records[i].normalize()
+	}
 	return records
+}
+
+// legacySharedSession is the single tmux session every remote cs session
+// used to live in, one window each.
+const legacySharedSession = "cs-remote"
+
+// normalize rewrites a record from the shared cs-remote model, which stored
+// only a window (or nothing, meaning the window was named after the
+// session), into the session+window form everything else uses.
+func (r *SessionRecord) normalize() {
+	if r.Machine == "" || r.Machine == "home" || r.RemoteSession != "" {
+		return
+	}
+	r.RemoteSession = legacySharedSession
+	if r.RemoteWindow == "" {
+		r.RemoteWindow = r.Name
+	}
+}
+
+// RemoteTarget is the tmux target for the record's remote session.
+func (r SessionRecord) RemoteTarget() string {
+	return tmuxTarget(r.RemoteSession, r.RemoteWindow)
+}
+
+// Matches reports whether a discovered tmux window belongs to this record.
+func (r SessionRecord) Matches(d DiscoveredSession) bool {
+	if r.Machine != d.Machine || r.RemoteSession != d.TmuxSession {
+		return false
+	}
+	return r.RemoteWindow == "" || r.RemoteWindow == d.WindowIndex || r.RemoteWindow == d.WindowName
 }
 
 func (s *Store) save(records []SessionRecord) error {

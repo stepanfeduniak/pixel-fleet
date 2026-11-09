@@ -26,7 +26,7 @@ func TestSSHControlOptsMultiplexesAndBoundsTheHandshake(t *testing.T) {
 	SetConnectTimeout(9 * time.Second)
 	t.Cleanup(func() { SetConnectTimeout(0) })
 
-	joined := strings.Join(sshControlOpts(), " ")
+	joined := strings.Join(sshOptions(), " ")
 	for _, want := range []string{
 		"ConnectTimeout=9",
 		"ControlMaster=auto",
@@ -46,7 +46,7 @@ func TestSubSecondConnectTimeoutNeverRoundsToZero(t *testing.T) {
 	SetConnectTimeout(200 * time.Millisecond)
 	t.Cleanup(func() { SetConnectTimeout(0) })
 
-	if got := strings.Join(sshControlOpts(), " "); !strings.Contains(got, "ConnectTimeout=1") {
+	if got := strings.Join(sshOptions(), " "); !strings.Contains(got, "ConnectTimeout=1") {
 		t.Errorf("200ms should clamp to 1s, got %s", got)
 	}
 }
@@ -70,21 +70,20 @@ func TestSSHArgsPutsMachineBeforeTheRemoteCommand(t *testing.T) {
 	}
 }
 
-// The interactive attach is a separate path from sshControlOpts, and the
-// two properties that matter on a weak link are easy to drop silently.
-func TestInteractiveSSHOptsSurviveABadLink(t *testing.T) {
-	// Without ConnectTimeout a reconnect against a still-down host waits out
-	// the kernel's ~2-minute SYN timeout, freezing the pane long past the
-	// reconnect loop's own retry delay.
-	if !strings.Contains(sshOpts, "ConnectTimeout=") {
-		t.Error("interactive sshOpts must bound the handshake")
-	}
-	if !strings.Contains(sshOpts, "ServerAliveInterval=") {
-		t.Error("interactive sshOpts must keepalive, or a dead link reads as a hung session")
-	}
-	// A shared master would couple every session on a host to one TCP
-	// connection: one blip would drop all of them instead of one.
-	if strings.Contains(sshOpts, "ControlMaster") {
-		t.Error("interactive sessions must not share a multiplexed master")
+// Viewers ride the same master as everything else. When each pane had its
+// own connection, a blip dropped all of them anyway and the reconnect cost
+// one full handshake per pane, all at once.
+func TestViewerSharesTheHostConnection(t *testing.T) {
+	cmd := BuildReattachCommand("gpu-01", "cs-x", "")
+	for _, want := range []string{
+		"'ControlMaster=auto'",
+		"'ControlPath=" + controlPath + "'",
+		"'ConnectTimeout=",
+		"'ServerAliveInterval=",
+		"ssh -t ",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("viewer command missing %q:\n%s", want, cmd)
+		}
 	}
 }

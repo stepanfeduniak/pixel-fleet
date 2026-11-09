@@ -10,25 +10,6 @@ import (
 	"github.com/stepanfeduniak/pixel-fleet/internal/apps"
 )
 
-// sshOpts are the SSH options used for all remote sessions — the long-lived
-// interactive attach, not the short control commands in sshopts.go. These
-// deliberately do not multiplex: a shared master would put every session on
-// one host behind a single TCP connection, so one blip would drop all of
-// them at once instead of one, and wrapWithReconnect already recovers a
-// dropped session without losing state.
-//
-// The keepalive is what decides how long a frozen pane stays frozen after
-// the link dies. At 15s x 3 that was 45 seconds of a session that looks
-// hung before the reconnect loop got control. 5s x 4 notices in ~20s while
-// still tolerating four consecutive missed replies, which matters on a
-// jittery link where round-trips can spike near a second.
-//
-// ConnectTimeout matters just as much and was missing. Without it a
-// reconnect attempt against a host that is still down waits out the
-// kernel's ~2-minute SYN timeout, so the pane sat dead far longer than the
-// loop's own 2s retry suggested.
-const sshOpts = "-t -o ServerAliveInterval=5 -o ServerAliveCountMax=4 -o ConnectTimeout=12"
-
 // clipboardEnabled mirrors the `clipboard` config option. Enforcing the
 // remote clipboard bridge happens on paths that have no *config.Config in
 // hand — the background discovery scan and reattach-command building — so the
@@ -338,84 +319,69 @@ fi`, launchExec, launchExec)
 		clipboardSnippet = clipboardBridgeSnippet
 	}
 
-	// The bootstrap script runs in the remote user's shell. It ensures the
-	// per-session tmux exists (creating it on first call, reusing it on
-	// reattach), then attaches the SSH client to its single pane.
-	//
-	// Reattach is detected by `tmux has-session`. If the existing session's
-	// pane is dead (claude exited but remain-on-exit kept the corpse around),
-	// we kill the session and recreate it so the user can re-launch.
+	// The bootstrap runs on every connect, including each reconnect, so it
+	// does as little as possible when the session already exists: one
+	// has-session, then attach. Creating and configuring only happens when
+	// there is nothing to attach to — the first launch, or a session whose
+	// pane is dead (the agent exited and remain-on-exit kept the corpse),
+	// which is killed and relaunched. The clipboard bridge does not need
+	// reapplying on reconnect: the discovery scan reapplies it every cycle.
 	bootstrap := fmt.Sprintf(`set -e
 SESSION=%s
-LAUNCH_FILE=$(mktemp -t cs-launch-XXXXXX.sh)
-trap 'rm -f "$LAUNCH_FILE"' EXIT
-echo %s | base64 -d > "$LAUNCH_FILE"
-chmod +x "$LAUNCH_FILE"
-SESSION_FRESH=0
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    DEAD=$(tmux list-panes -t "$SESSION" -F '#{pane_dead}' 2>/dev/null | head -1)
-    if [ "$DEAD" = "1" ]; then
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
-    fi
+if [ "$(tmux list-panes -t "$SESSION" -F '#{pane_dead}' 2>/dev/null | head -1)" = "1" ]; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
 fi
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    LAUNCH_FILE=$(mktemp -t cs-launch-XXXXXX.sh)
+    trap 'rm -f "$LAUNCH_FILE"' EXIT
+    echo %s | base64 -d > "$LAUNCH_FILE"
     tmux new-session -d -s "$SESSION" "bash $LAUNCH_FILE"
-    SESSION_FRESH=1
-fi
-tmux set-option -t "$SESSION" history-limit 50000 >/dev/null 2>&1 || true
-tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
-tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
-tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true%s
-if [ "$SESSION_FRESH" = "1" ]; then
+    tmux set-option -t "$SESSION" history-limit 50000 >/dev/null 2>&1 || true
+    tmux set-option -t "$SESSION" mouse on >/dev/null 2>&1 || true
+    tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
+    tmux set-window-option -t "$SESSION" remain-on-exit on >/dev/null 2>&1 || true%s
     sleep 0.5
 fi
-%s`, shellQuote(remoteSession), launchB64, clipboardSnippet, remoteAttach(`"$SESSION"`))
+%s`, shellQuote(remoteSession), launchB64, indent(clipboardSnippet), remoteAttach(`"$SESSION"`))
 
-	bootstrapB64 := base64.StdEncoding.EncodeToString([]byte(bootstrap))
-
-	// Outer SSH command. The remote shell decodes the bootstrap and passes
-	// it to `bash -c` as an argument (not via stdin). This matters because
-	// the bootstrap ends with `tmux attach`, and tmux attach requires
-	// the process stdin to be a TTY. If we piped the script into `bash`,
-	// the bash process would inherit the pipe as stdin, so the exec'd
-	// tmux would also get the pipe — and fail with "not a terminal".
-	// Using bash -c "$(echo ... | base64 -d)" lets bash keep the SSH TTY
-	// as its stdin.
-	inner := fmt.Sprintf(`bash -c "$(echo %s | base64 -d)"`, bootstrapB64)
-	sshCmd := fmt.Sprintf("ssh %s %s %s",
-		sshOpts, opts.Machine, shellQuote(inner))
-	return wrapWithReconnect(sshCmd)
+	return remoteViewer(opts.Machine, bootstrap)
 }
 
-// BuildReattachCommand builds a command to reattach to an existing tmux session.
-// `tmuxSession` is the remote tmux session name; `window` may be empty for the
-// new per-session model. If a window is provided we attach to that window
-// (used by Adopt for orphaned cs-remote:WINDOW legacy entries).
+// indent prefixes every line of s with four spaces, so a snippet nests
+// readably inside an if-block of a generated script.
+func indent(s string) string {
+	return strings.ReplaceAll(s, "\n", "\n    ")
+}
+
+// BuildReattachCommand builds the viewer command for an existing tmux
+// session. An empty window attaches to the whole session.
 func BuildReattachCommand(machine, tmuxSession, window string) string {
-	target := tmuxSession
-	if window != "" {
-		target = tmuxSession + ":" + window
-	}
+	target := tmuxTarget(tmuxSession, window)
 	if machine == "home" {
-		// The local tmux server is configured directly by
-		// internal/tmux.ConfigureClipboard, so there is nothing to install
-		// here.
 		return fmt.Sprintf("tmux attach -t %s", target)
 	}
+	return remoteViewer(machine, remoteAttach(shellQuote(target)))
+}
 
-	// Reattaching to a session cs did not just launch still has to leave the
-	// remote tmux configured, or copying inside an adopted session would
-	// silently go nowhere. The script is base64'd for the same reason the
-	// launch bootstrap is: it contains quotes, and `tmux attach` needs
-	// the ssh TTY as its stdin.
-	script := remoteAttach(target)
-	if ClipboardEnabled() {
-		script = strings.TrimPrefix(clipboardBridgeSnippet, "\n") + "\n" + script
+// tmuxTarget joins a session and an optional window into a tmux target.
+func tmuxTarget(tmuxSession, window string) string {
+	if window == "" {
+		return tmuxSession
 	}
+	return tmuxSession + ":" + window
+}
+
+// remoteViewer runs script on machine with the pane's TTY, wrapped in the
+// reconnect loop. It is the only way a viewer pane reaches a remote host.
+//
+// The script is base64'd because it contains quotes, and handed to `bash -c`
+// as an argument rather than on stdin: it ends in `tmux attach`, which needs
+// the ssh TTY as its stdin, and piping the script in would give it the pipe
+// instead ("not a terminal").
+func remoteViewer(machine, script string) string {
 	inner := fmt.Sprintf(`bash -c "$(echo %s | base64 -d)"`,
 		base64.StdEncoding.EncodeToString([]byte(script)))
-	sshCmd := fmt.Sprintf("ssh %s %s %s", sshOpts, machine, shellQuote(inner))
-	return wrapWithReconnect(sshCmd)
+	return wrapWithReconnect(sshShellCommand(machine, inner))
 }
 
 // detachedExitCode is what a remote attach exits with when its tmux client

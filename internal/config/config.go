@@ -77,7 +77,6 @@ type Config struct {
 	// machines in the background for orphaned cs sessions (alive on a
 	// remote, missing from the local store). Set to 0 to disable.
 	DiscoveryInterval time.Duration `yaml:"discovery_interval"`
-	RemoteTmuxSession string        `yaml:"remote_tmux_session"`
 	// Clipboard controls whether cs installs copy-to-system-clipboard and
 	// URL key bindings on the local tmux server, and the matching OSC 52
 	// settings on remotes. Defaults to true. Turn it off if you keep your
@@ -102,7 +101,6 @@ func DefaultConfig() *Config {
 		ScanTimeout:       20 * time.Second,
 		ConnectTimeout:    12 * time.Second,
 		DiscoveryInterval: 60 * time.Second,
-		RemoteTmuxSession: "cs-remote",
 		Clipboard:         &enabled,
 	}
 }
@@ -154,9 +152,6 @@ func Load() *Config {
 	// like -1s, which we preserve here as "off".
 	if cfg.DiscoveryInterval == 0 {
 		cfg.DiscoveryInterval = 60 * time.Second
-	}
-	if cfg.RemoteTmuxSession == "" {
-		cfg.RemoteTmuxSession = "cs-remote"
 	}
 	if cfg.Clipboard == nil {
 		enabled := true
